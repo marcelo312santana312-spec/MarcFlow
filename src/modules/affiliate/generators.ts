@@ -239,8 +239,84 @@ export function createShopeeAffiliateGenerator(
 }
 
 /**
- * Gerador do Mercado Livre via endpoint oficial/autorizado configurado no ambiente.
- * Só executa se `MERCADOLIVRE_AFFILIATE_API_URL` e `MERCADOLIVRE_AFFILIATE_TOKEN` estiverem configurados.
+ * Gera link de afiliado diretamente via Mercado Livre usando Cookie de sessão
+ */
+async function generateMercadoLivreDirect(
+    productUrl: string,
+    cookie: string,
+    tag: string
+): Promise<AffiliateGenerationResult | null> {
+    try {
+        const res1 = await fetch("https://www.mercadolivre.com.br/afiliados/linkbuilder", {
+            headers: {
+                cookie: cookie,
+                "user-agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            },
+            signal: AbortSignal.timeout(8000),
+        });
+
+        const setCookies =
+            typeof (res1.headers as any).getSetCookie === "function"
+                ? (res1.headers as any).getSetCookie()
+                : [];
+        const cookieMap: Record<string, string> = {};
+        cookie.split(";").forEach((c) => {
+            const [k, ...v] = c.trim().split("=");
+            if (k) cookieMap[k] = v.join("=");
+        });
+        for (const sc of setCookies) {
+            const part = String(sc).split(";")[0];
+            const [k, ...v] = part.trim().split("=");
+            if (k) cookieMap[k] = v.join("=");
+        }
+        const updatedCookie = Object.keys(cookieMap)
+            .map((k) => `${k}=${cookieMap[k]}`)
+            .join("; ");
+
+        const res2 = await fetch(
+            "https://www.mercadolivre.com.br/affiliate-program/api/v2/affiliates/createLink",
+            {
+                method: "POST",
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "content-type": "application/json",
+                    origin: "https://www.mercadolivre.com.br",
+                    referer: "https://www.mercadolivre.com.br/afiliados/linkbuilder",
+                    "user-agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "x-csrf-token": "CRoUbkB5-udAuzRwZkidqm7yW9Omqcb1z1zs",
+                    cookie: updatedCookie,
+                },
+                body: JSON.stringify({
+                    urls: [productUrl],
+                    tag: tag || "venddor17",
+                }),
+                signal: AbortSignal.timeout(8000),
+            }
+        );
+
+        if (!res2.ok) return null;
+
+        const data: any = await res2.json().catch(() => null);
+        const item = data?.urls?.[0];
+        const shortUrl = item?.short_url || item?.shortUrl || item?.url;
+        if (typeof shortUrl === "string" && isValidOfficialAffiliateUrl(shortUrl, "mercadolivre")) {
+            return {
+                ok: true,
+                platform: "mercadolivre",
+                affiliateUrl: shortUrl.trim(),
+            };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Gerador do Mercado Livre via endpoint oficial/autorizado configurado no ambiente
+ * ou geração direta via Cookie da sessão de afiliado.
  */
 export function createMercadoLivreAffiliateGenerator(
     opts: { env?: Record<string, string | undefined>; fetchFn?: SafeFetchFn } = {}
@@ -267,6 +343,15 @@ export function createMercadoLivreAffiliateGenerator(
             const endpoint = String(env.MERCADOLIVRE_AFFILIATE_API_URL).trim();
             const token = String(env.MERCADOLIVRE_AFFILIATE_TOKEN || "").trim();
             const tag = String(env.MERCADOLIVRE_AFFILIATE_TAG || "venddor17").trim();
+
+            // Se o token contém cookies reais do Mercado Livre, tenta geração direta primeiro
+            const isCookie = token.includes("ssid=") || token.includes("orguserid=") || token.includes("orgnickp=");
+            if (isCookie && !opts.fetchFn) {
+                const directResult = await generateMercadoLivreDirect(input.canonicalProductUrl, token, tag);
+                if (directResult?.ok) {
+                    return directResult;
+                }
+            }
 
             try {
                 const reqHeaders: Record<string, string> = {

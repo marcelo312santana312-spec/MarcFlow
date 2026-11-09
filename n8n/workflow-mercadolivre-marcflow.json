@@ -74,7 +74,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "https://www.mercadolivre.com.br/afiliados/link-builder",
+        "url": "https://www.mercadolivre.com.br/afiliados/linkbuilder",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
