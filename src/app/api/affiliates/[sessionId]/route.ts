@@ -57,11 +57,58 @@ export async function GET(
                 ? stored.enabled
                 : effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED !== "false";
 
-        const [totalConversions, shopeeCount, mlCount, recentList] = await Promise.all([
+        // Parâmetros de filtro para busca e paginação de links gerados
+        const searchParams = request.nextUrl.searchParams;
+        const startDate = searchParams.get("startDate");
+        const endDate = searchParams.get("endDate");
+        const platform = searchParams.get("platform");
+        const status = searchParams.get("status");
+        const search = searchParams.get("search");
+        const limitParam = searchParams.get("limit");
+        const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 50, 1), 500) : 100;
+
+        const whereConversions: any = { sessionId };
+        if (platform && platform !== "all") {
+            whereConversions.platform = platform;
+        }
+        if (status && status !== "all") {
+            whereConversions.status = status;
+        }
+        if (startDate || endDate) {
+            whereConversions.createdAt = {};
+            if (startDate) {
+                const s = new Date(startDate.includes("T") ? startDate : `${startDate}T00:00:00`);
+                if (!isNaN(s.getTime())) {
+                    whereConversions.createdAt.gte = s;
+                }
+            }
+            if (endDate) {
+                const e = new Date(endDate.includes("T") ? endDate : `${endDate}T23:59:59.999`);
+                if (!isNaN(e.getTime())) {
+                    whereConversions.createdAt.lte = e;
+                }
+            }
+        }
+        if (search && search.trim()) {
+            const q = search.trim();
+            whereConversions.OR = [
+                { originalUrl: { contains: q } },
+                { affiliateUrl: { contains: q } },
+                { productId: { contains: q } },
+                { senderJid: { contains: q } },
+            ];
+        }
+
+        const [totalConversions, shopeeCount, mlCount, recentList, filteredCount] = await Promise.all([
             prisma.affiliateConversion.count({ where: { sessionId } }),
             prisma.affiliateConversion.count({ where: { sessionId, platform: "shopee", status: "success" } }),
             prisma.affiliateConversion.count({ where: { sessionId, platform: "mercadolivre", status: "success" } }),
-            prisma.affiliateConversion.findMany({ where: { sessionId }, orderBy: { createdAt: "desc" }, take: 50 })
+            prisma.affiliateConversion.findMany({
+                where: whereConversions,
+                orderBy: { createdAt: "desc" },
+                take: limit,
+            }),
+            prisma.affiliateConversion.count({ where: whereConversions }),
         ]);
 
         return NextResponse.json({
@@ -71,7 +118,8 @@ export async function GET(
                     total: totalConversions,
                     shopee: shopeeCount,
                     mercadolivre: mlCount,
-                    recent: recentList
+                    recent: recentList,
+                    filteredTotal: filteredCount,
                 },
                 enabled: autoReplyEnabled,
                 shopee: {

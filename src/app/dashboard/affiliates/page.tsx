@@ -40,6 +40,10 @@ import {
     Check,
     ArrowUpRight,
     Bot,
+    Calendar,
+    Search,
+    X,
+    Filter,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -62,6 +66,7 @@ interface AffiliateStats {
     shopee: number;
     mercadolivre: number;
     recent: ConversionRecord[];
+    filteredTotal?: number;
 }
 
 interface AffiliateTemplatesState {
@@ -134,6 +139,58 @@ export default function AffiliatesPage() {
     });
     const [copiedId, setCopiedId] = useState<string | null>(null);
 
+    // Filtros de busca no histórico de links
+    const [filterStartDate, setFilterStartDate] = useState("");
+    const [filterEndDate, setFilterEndDate] = useState("");
+    const [filterPlatform, setFilterPlatform] = useState("all");
+    const [filterStatus, setFilterStatus] = useState("all");
+    const [filterSearch, setFilterSearch] = useState("");
+    const [dateQuickRange, setDateQuickRange] = useState("all");
+
+    const handleQuickDate = (range: string) => {
+        setDateQuickRange(range);
+        const today = new Date();
+        const formatDate = (d: Date) => d.toISOString().split("T")[0];
+
+        if (range === "today") {
+            const t = formatDate(today);
+            setFilterStartDate(t);
+            setFilterEndDate(t);
+        } else if (range === "yesterday") {
+            const y = new Date();
+            y.setDate(y.getDate() - 1);
+            const str = formatDate(y);
+            setFilterStartDate(str);
+            setFilterEndDate(str);
+        } else if (range === "7days") {
+            const past = new Date();
+            past.setDate(past.getDate() - 7);
+            setFilterStartDate(formatDate(past));
+            setFilterEndDate(formatDate(today));
+        } else if (range === "30days") {
+            const past = new Date();
+            past.setDate(past.getDate() - 30);
+            setFilterStartDate(formatDate(past));
+            setFilterEndDate(formatDate(today));
+        } else if (range === "all") {
+            setFilterStartDate("");
+            setFilterEndDate("");
+        }
+    };
+
+    const handleClearFilters = () => {
+        setFilterStartDate("");
+        setFilterEndDate("");
+        setFilterPlatform("all");
+        setFilterStatus("all");
+        setFilterSearch("");
+        setDateQuickRange("all");
+    };
+
+    const isFilterActive = Boolean(
+        filterStartDate || filterEndDate || filterPlatform !== "all" || filterStatus !== "all" || filterSearch.trim()
+    );
+
     // Bot de IA Gemini (Status e controle rápido)
     const [aiEnabled, setAiEnabled] = useState(false);
     const [togglingAi, setTogglingAi] = useState(false);
@@ -179,11 +236,31 @@ export default function AffiliatesPage() {
         return cleaned;
     };
 
-    const loadSettings = async () => {
+    const loadSettings = async (overrideFilters?: {
+        startDate?: string;
+        endDate?: string;
+        platform?: string;
+        status?: string;
+        search?: string;
+    }) => {
         if (!sessionId) return;
         setLoading(true);
         try {
-            const res = await fetch(`/api/affiliates/${sessionId}`);
+            const sDate = overrideFilters?.startDate !== undefined ? overrideFilters.startDate : filterStartDate;
+            const eDate = overrideFilters?.endDate !== undefined ? overrideFilters.endDate : filterEndDate;
+            const plat = overrideFilters?.platform !== undefined ? overrideFilters.platform : filterPlatform;
+            const stat = overrideFilters?.status !== undefined ? overrideFilters.status : filterStatus;
+            const q = overrideFilters?.search !== undefined ? overrideFilters.search : filterSearch;
+
+            const params = new URLSearchParams();
+            if (sDate) params.set("startDate", sDate);
+            if (eDate) params.set("endDate", eDate);
+            if (plat && plat !== "all") params.set("platform", plat);
+            if (stat && stat !== "all") params.set("status", stat);
+            if (q && q.trim()) params.set("search", q.trim());
+
+            const qs = params.toString() ? `?${params.toString()}` : "";
+            const res = await fetch(`/api/affiliates/${sessionId}${qs}`);
             const json = await res.json();
             if (res.ok && json.status && json.data) {
                 const d = json.data;
@@ -211,6 +288,7 @@ export default function AffiliatesPage() {
                         shopee: Number(d.stats.shopee) || 0,
                         mercadolivre: Number(d.stats.mercadolivre) || 0,
                         recent: Array.isArray(d.stats.recent) ? d.stats.recent : [],
+                        filteredTotal: d.stats.filteredTotal !== undefined ? Number(d.stats.filteredTotal) : undefined,
                     });
                 }
 
@@ -238,8 +316,12 @@ export default function AffiliatesPage() {
     };
 
     useEffect(() => {
-        loadSettings();
-    }, [sessionId]);
+        if (!sessionId) return;
+        const timer = setTimeout(() => {
+            loadSettings();
+        }, 250);
+        return () => clearTimeout(timer);
+    }, [sessionId, filterStartDate, filterEndDate, filterPlatform, filterStatus, filterSearch]);
 
     const handleSave = async () => {
         if (!sessionId) return;
@@ -416,20 +498,24 @@ export default function AffiliatesPage() {
                                     <Clock className="h-5 w-5 text-primary" />
                                     Histórico de Links Gerados
                                 </CardTitle>
-                                {stats.recent.length > 0 && (
+                                {stats.filteredTotal !== undefined && stats.filteredTotal !== stats.total ? (
+                                    <Badge variant="secondary" className="text-xs">
+                                        {stats.recent.length} de {stats.filteredTotal} {stats.filteredTotal === 1 ? "filtrado" : "filtrados"} (total: {stats.total})
+                                    </Badge>
+                                ) : stats.recent.length > 0 ? (
                                     <Badge variant="secondary" className="text-xs">
                                         {stats.recent.length} {stats.recent.length === 1 ? "registro" : "registros"}
                                     </Badge>
-                                )}
+                                ) : null}
                             </div>
                             <CardDescription className="mt-1">
-                                Acompanhe os links recebidos no WhatsApp e convertidos para seus links comissionados (use a barra de rolagem abaixo para navegar).
+                                Acompanhe os links recebidos no WhatsApp e convertidos para seus links comissionados (use o filtro de data e busca abaixo).
                             </CardDescription>
                         </div>
                         <Button
                             variant="outline"
                             size="sm"
-                            onClick={loadSettings}
+                            onClick={() => loadSettings()}
                             disabled={loading || !sessionId}
                             className="self-start sm:self-auto h-8 text-xs"
                         >
@@ -437,14 +523,216 @@ export default function AffiliatesPage() {
                             Atualizar
                         </Button>
                     </CardHeader>
-                    <CardContent className="p-0 sm:p-6 sm:pt-0">
+                    <CardContent className="p-0 sm:p-6 sm:pt-0 space-y-4">
+                        {/* Barra de Filtros de Data e Busca */}
+                        <div className="p-3.5 sm:p-4 rounded-lg border bg-muted/20 mx-4 sm:mx-0 space-y-3">
+                            {/* Linha 1: Campo de Busca e Botões Rápidos de Data */}
+                            <div className="flex flex-col lg:flex-row gap-2.5 items-stretch lg:items-center justify-between">
+                                <div className="relative flex-1 min-w-[220px]">
+                                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        placeholder="Buscar por link, produto (MLB/Shopee) ou número..."
+                                        value={filterSearch}
+                                        onChange={(e) => setFilterSearch(e.target.value)}
+                                        className="pl-9 pr-8 h-9 text-xs bg-background"
+                                    />
+                                    {filterSearch && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setFilterSearch("")}
+                                            className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                                            title="Limpar busca"
+                                        >
+                                            <X className="h-4 w-4" />
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Botões rápidos de intervalo de data */}
+                                <div className="flex flex-wrap items-center gap-1">
+                                    <span className="text-xs text-muted-foreground mr-1 flex items-center gap-1 font-medium">
+                                        <Calendar className="h-3.5 w-3.5" /> Período:
+                                    </span>
+                                    <Button
+                                        type="button"
+                                        variant={dateQuickRange === "all" ? "default" : "outline"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2.5"
+                                        onClick={() => handleQuickDate("all")}
+                                    >
+                                        Todos
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={dateQuickRange === "today" ? "default" : "outline"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2.5"
+                                        onClick={() => handleQuickDate("today")}
+                                    >
+                                        Hoje
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={dateQuickRange === "yesterday" ? "default" : "outline"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2.5"
+                                        onClick={() => handleQuickDate("yesterday")}
+                                    >
+                                        Ontem
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={dateQuickRange === "7days" ? "default" : "outline"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2.5"
+                                        onClick={() => handleQuickDate("7days")}
+                                    >
+                                        7 dias
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={dateQuickRange === "30days" ? "default" : "outline"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2.5"
+                                        onClick={() => handleQuickDate("30days")}
+                                    >
+                                        30 dias
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Linha 2: Filtro por data específica (De/Até), Plataforma, Status e Limpar */}
+                            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/50">
+                                <div className="flex items-center gap-1.5 text-xs">
+                                    <span className="text-muted-foreground font-medium">De:</span>
+                                    <Input
+                                        type="date"
+                                        value={filterStartDate}
+                                        onChange={(e) => {
+                                            setFilterStartDate(e.target.value);
+                                            setDateQuickRange("custom");
+                                        }}
+                                        className="h-7 w-[130px] text-xs px-2 py-0 bg-background"
+                                    />
+                                </div>
+                                <div className="flex items-center gap-1.5 text-xs">
+                                    <span className="text-muted-foreground font-medium">Até:</span>
+                                    <Input
+                                        type="date"
+                                        value={filterEndDate}
+                                        onChange={(e) => {
+                                            setFilterEndDate(e.target.value);
+                                            setDateQuickRange("custom");
+                                        }}
+                                        className="h-7 w-[130px] text-xs px-2 py-0 bg-background"
+                                    />
+                                </div>
+
+                                {/* Filtro por Plataforma */}
+                                <div className="flex items-center gap-1 ml-0 sm:ml-2">
+                                    <Button
+                                        type="button"
+                                        variant={filterPlatform === "all" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2"
+                                        onClick={() => setFilterPlatform("all")}
+                                    >
+                                        Todas
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={filterPlatform === "shopee" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2 text-orange-600 dark:text-orange-400"
+                                        onClick={() => setFilterPlatform("shopee")}
+                                    >
+                                        🛍️ Shopee
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={filterPlatform === "mercadolivre" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2 text-yellow-700 dark:text-yellow-400"
+                                        onClick={() => setFilterPlatform("mercadolivre")}
+                                    >
+                                        🟡 Meli
+                                    </Button>
+                                </div>
+
+                                {/* Filtro por Status */}
+                                <div className="flex items-center gap-1">
+                                    <Button
+                                        type="button"
+                                        variant={filterStatus === "all" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2"
+                                        onClick={() => setFilterStatus("all")}
+                                    >
+                                        Todos
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={filterStatus === "success" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2 text-emerald-600 dark:text-emerald-400"
+                                        onClick={() => setFilterStatus("success")}
+                                    >
+                                        ✅ OK
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant={filterStatus === "error" ? "secondary" : "ghost"}
+                                        size="sm"
+                                        className="h-7 text-xs px-2 text-destructive"
+                                        onClick={() => setFilterStatus("error")}
+                                    >
+                                        ❌ Erros
+                                    </Button>
+                                </div>
+
+                                {/* Botão Limpar Filtros */}
+                                {isFilterActive && (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={handleClearFilters}
+                                        className="h-7 text-xs text-muted-foreground hover:text-foreground ml-auto"
+                                    >
+                                        <X className="h-3 w-3 mr-1" /> Limpar filtros
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+
                         {stats.recent.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-10 px-4 text-center border-t sm:border rounded-lg bg-muted/10 mx-4 sm:mx-0 my-4 sm:my-0">
-                                <ShoppingBag className="h-10 w-10 text-muted-foreground/50 mb-3" />
-                                <p className="font-medium text-sm text-foreground">Nenhuma conversão registrada ainda</p>
-                                <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                                    Envie um link de produto no WhatsApp da sua sessão ou utilize o simulador abaixo para testar a geração automática.
-                                </p>
+                                {isFilterActive ? (
+                                    <>
+                                        <Filter className="h-10 w-10 text-muted-foreground/50 mb-3" />
+                                        <p className="font-medium text-sm text-foreground">Nenhum link encontrado para os filtros selecionados</p>
+                                        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                                            Tente alterar as datas selecionadas, limpar o termo de busca ou selecionar outra plataforma.
+                                        </p>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleClearFilters}
+                                            className="mt-3 h-8 text-xs"
+                                        >
+                                            <X className="h-3.5 w-3.5 mr-1" /> Limpar Filtros
+                                        </Button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <ShoppingBag className="h-10 w-10 text-muted-foreground/50 mb-3" />
+                                        <p className="font-medium text-sm text-foreground">Nenhuma conversão registrada ainda</p>
+                                        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                                            Envie um link de produto no WhatsApp da sua sessão ou utilize o simulador abaixo para testar a geração automática.
+                                        </p>
+                                    </>
+                                )}
                             </div>
                         ) : (
                             <div className="border rounded-md overflow-x-auto overflow-y-auto max-h-[420px] relative sidebar-scrollbar shadow-inner">
