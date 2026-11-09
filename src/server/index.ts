@@ -26,6 +26,10 @@ const handle = app.getRequestHandler();
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     try {
+      // Respect reverse-proxy headers from Cloudflare Tunnel / Nginx
+      if (req.headers["x-forwarded-host"]) {
+        req.headers.host = req.headers["x-forwarded-host"] as string;
+      }
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Webhook-Secret");
