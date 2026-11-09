@@ -30,6 +30,7 @@ import {
     MessageCircleReply,
     UserPlus,
     DatabaseBackup,
+    ShoppingBag,
 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
@@ -72,6 +73,7 @@ const navGroups: NavGroup[] = [
             { href: "/dashboard/flows", label: "Fluxos de conversa", icon: Workflow },
             { href: "/dashboard/bot-settings", label: "Configurações do bot", icon: Bot },
             { href: "/dashboard/autoreply", label: "Resposta automática", icon: MessageCircleReply },
+            { href: "/dashboard/affiliates", label: "Links de afiliados", icon: ShoppingBag },
             { href: "/dashboard/profile", label: "Perfil do bot", icon: UserCircle },
             { href: "/dashboard/scheduler", label: "Agendador", icon: CalendarClock },
             { href: "/dashboard/webhooks", label: "Webhooks & API", icon: Webhook },
@@ -99,10 +101,15 @@ const navGroups: NavGroup[] = [
 
 export function MobileNav({ appName = "MarcFlow" }: { appName?: string }) {
     const [open, setOpen] = useState(false);
+    const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
     const pathname = usePathname();
     const { data: session } = useSession();
     // @ts-ignore
     const userRole = session?.user?.role;
+
+    const toggleGroup = (label: string) => {
+        setCollapsedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
+    };
 
     const isActive = (href: string) => {
         if (href === "/dashboard") return pathname === "/dashboard";
@@ -132,41 +139,55 @@ export function MobileNav({ appName = "MarcFlow" }: { appName?: string }) {
                         );
                         if (visibleItems.length === 0) return null;
 
+                        const isGroupCollapsed = Boolean(collapsedGroups[group.label]);
+
                         return (
                             <div key={group.label} className="mb-1">
                                 {group.label !== "Principal" && (
-                                    <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                                        {group.label}
-                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleGroup(group.label)}
+                                        className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-900 rounded transition-colors"
+                                    >
+                                        <span>{group.label}</span>
+                                        <ChevronDown
+                                            size={14}
+                                            className={`transition-transform duration-200 ${
+                                                isGroupCollapsed ? "-rotate-90" : "rotate-0"
+                                            }`}
+                                        />
+                                    </button>
                                 )}
-                                <div className="space-y-0.5">
-                                    {visibleItems.map(({ href, label, icon: Icon, external }) => (
-                                        <Link
-                                            key={href}
-                                            href={href}
-                                            target={external ? "_blank" : undefined}
-                                            onClick={() => setOpen(false)}
-                                            className={`
-                                                flex items-center rounded-lg text-sm font-medium
-                                                transition-all duration-200 group relative
-                                                gap-3 px-3 py-2
-                                                ${isActive(href)
-                                                    ? "text-primary bg-primary/10 shadow-sm"
-                                                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                                                }
-                                            `}
-                                        >
-                                            {isActive(href) && (
-                                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 bg-primary rounded-r-full" />
-                                            )}
-                                            <Icon
-                                                size={17}
-                                                className={`flex-shrink-0 transition-colors duration-200 ${isActive(href) ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"}`}
-                                            />
-                                            <span className="truncate">{label}</span>
-                                        </Link>
-                                    ))}
-                                </div>
+                                {!isGroupCollapsed && (
+                                    <div className="space-y-0.5">
+                                        {visibleItems.map(({ href, label, icon: Icon, external }) => (
+                                            <Link
+                                                key={href}
+                                                href={href}
+                                                target={external ? "_blank" : undefined}
+                                                onClick={() => setOpen(false)}
+                                                className={`
+                                                    flex items-center rounded-lg text-sm font-medium
+                                                    transition-all duration-200 group relative
+                                                    gap-3 px-3 py-2
+                                                    ${isActive(href)
+                                                        ? "text-primary bg-primary/10 shadow-sm"
+                                                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                                                    }
+                                                `}
+                                            >
+                                                {isActive(href) && (
+                                                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 bg-primary rounded-r-full" />
+                                                )}
+                                                <Icon
+                                                    size={17}
+                                                    className={`flex-shrink-0 transition-colors duration-200 ${isActive(href) ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"}`}
+                                                />
+                                                <span className="truncate">{label}</span>
+                                            </Link>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         );
                     })}

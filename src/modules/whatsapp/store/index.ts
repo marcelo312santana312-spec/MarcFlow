@@ -463,6 +463,20 @@ async function processAndSaveMessage(
     } else if (messageContent?.contactMessage) {
         messageType = "CONTACT";
         text = messageContent.contactMessage.displayName || "";
+    } else if (messageContent?.listResponseMessage) {
+        text = messageContent.listResponseMessage.singleSelectReply?.selectedRowId || messageContent.listResponseMessage.title || "";
+    } else if (messageContent?.interactiveResponseMessage) {
+        const ir = messageContent.interactiveResponseMessage;
+        let parsedId = "";
+        try {
+            const p = JSON.parse(ir.nativeFlowResponseMessage?.paramsJson || "{}");
+            parsedId = String(p.id || p.selectedRowId || p.title || "");
+        } catch {}
+        text = parsedId || ir.body?.text || "";
+    } else if (messageContent?.buttonsResponseMessage) {
+        text = messageContent.buttonsResponseMessage.selectedDisplayText || messageContent.buttonsResponseMessage.selectedButtonId || "";
+    } else if (messageContent?.templateButtonReplyMessage) {
+        text = messageContent.templateButtonReplyMessage.selectedDisplayText || messageContent.templateButtonReplyMessage.selectedId || "";
     }
 
     // Determine effective participant for groups

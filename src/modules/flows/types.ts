@@ -37,10 +37,12 @@ export interface MenuOption { id: string; text: string }
 /** WhatsApp limits for a poll (Baileys can't send list/button messages from a regular account). */
 export const POLL_MAX_OPTIONS = 12;
 export const POLL_MAX_QUESTION = 255;
+export const LIST_MAX_OPTIONS = 10;
 
 export interface MenuData {
     /** "number" (default) = numbered text; "poll" = WhatsApp poll, the contact taps the option */
-    mode?: "number" | "poll";
+    mode?: "number" | "poll" | "list";
+    buttonText?: string;
     question: string;
     invalidText: string;
     maxErrors: number; // 0 = never take the error exit
@@ -224,6 +226,8 @@ export function validateGraph(graph: FlowGraph): GraphIssue[] {
                     if (d.question.length > POLL_MAX_QUESTION) err(`a pergunta da enquete passa de ${POLL_MAX_QUESTION} caracteres.`);
                     const texts = d.options.map(o => o.text.trim().toLowerCase());
                     if (new Set(texts).size < texts.length) err("a enquete não pode ter duas respostas iguais.");
+                } else if (d.mode === "list") {
+                    if (d.options.length > LIST_MAX_OPTIONS) err(`a lista suspensa aceita no máximo ${LIST_MAX_OPTIONS} respostas.`);
                 }
                 break;
             }

@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
-    ANSWER_TYPES, BLOCKS, POLL_MAX_OPTIONS, POLL_MAX_QUESTION, WEEKDAYS, newId, type AnswerType, type ConditionData, type ConditionOp, type ConditionSource,
+    ANSWER_TYPES, BLOCKS, LIST_MAX_OPTIONS, POLL_MAX_OPTIONS, POLL_MAX_QUESTION, WEEKDAYS, newId, type AnswerType, type ConditionData, type ConditionOp, type ConditionSource,
     type ContentItem, type FieldScope, type FieldType, type FlowAction, type FlowCondition, type FlowNode, type MediaKind,
     type MenuData, type NodeDataMap, type RandomizerData, type SmartDelayData, type TimeUnit,
 } from "@/modules/flows/types";
@@ -283,11 +283,16 @@ function MenuEditor({ node, set, color }: { node: FlowNode<"menu">; set: (d: Men
     const d = node.data;
     const opts = d.options;
     const poll = d.mode === "poll";
+    const list = d.mode === "list";
     const full = poll && opts.length >= POLL_MAX_OPTIONS;
     return (
         <div className="space-y-4">
             <Section title="Como o contato responde">
-                <RadioGroup value={poll ? "poll" : "number"} onValueChange={v => set({ ...d, mode: v as "poll" | "number" })} className="gap-2">
+                <RadioGroup value={d.mode || "number"} onValueChange={v => set({ ...d, mode: v as "poll" | "number" | "list" })} className="gap-2">
+                    <label className="flex cursor-pointer items-start gap-2.5">
+                        <RadioGroupItem value="list" className="mt-0.5" />
+                        <span className="text-[13px]"><b>Lista suspensa (&quot;Ver opções&quot;)</b> — abre menu suspenso na tela<span className="block text-[11px] text-muted-foreground">Até {LIST_MAX_OPTIONS} opções com botão &quot;Ver opções&quot; (nativeFlow single_select).</span></span>
+                    </label>
                     <label className="flex cursor-pointer items-start gap-2.5">
                         <RadioGroupItem value="poll" className="mt-0.5" />
                         <span className="text-[13px]"><b>Enquete</b> — toca na opção<span className="block text-[11px] text-muted-foreground">Até {POLL_MAX_OPTIONS} respostas. Funciona no Android, iPhone e WhatsApp Web.</span></span>
@@ -297,7 +302,12 @@ function MenuEditor({ node, set, color }: { node: FlowNode<"menu">; set: (d: Men
                         <span className="text-[13px]"><b>Número</b> — digita o número<span className="block text-[11px] text-muted-foreground">Pergunta e opções numeradas numa mensagem de texto.</span></span>
                     </label>
                 </RadioGroup>
-                <p className="text-[11px] text-muted-foreground">Botão de lista (&quot;Ver opções&quot;) não está disponível: o WhatsApp só entrega listas e botões para a API oficial, e esta conexão usa o WhatsApp Web.</p>
+                {list && (
+                    <div className="pt-2 space-y-1">
+                        <Label className="text-xs">Texto do botão suspenso</Label>
+                        <Input className="h-9" maxLength={20} placeholder="Ver opções" value={d.buttonText || ""} onChange={e => set({ ...d, buttonText: e.target.value })} />
+                    </div>
+                )}
             </Section>
             <Section title={poll ? "Pergunta da enquete" : "Pergunta"} hint={poll
                 ? `Até ${POLL_MAX_QUESTION} caracteres. Quem não tocar ainda pode digitar o número ou o texto da opção.`

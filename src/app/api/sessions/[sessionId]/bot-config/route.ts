@@ -53,7 +53,13 @@ export async function GET(
             spamDelayMax: 3000,
             welcomeMessage: null,
             autoRead: false,
-            alwaysOnline: false
+            alwaysOnline: false,
+            aiEnabled: false,
+            aiApiKey: null,
+            aiModel: "gemini-3.8-flash",
+            aiSystemPrompt: null,
+            aiTriggerType: "ALL",
+            aiContextLimit: 10,
         };
 
         return NextResponse.json({ status: true, message: "Bot config fetched successfully", data: session.botConfig });
@@ -86,6 +92,38 @@ export async function POST(
 
         if (!session) return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
 
+        // Monta os campos de update dinamicamente para suportar updates parciais (ex: apenas aiEnabled)
+        const updateData: Record<string, any> = {};
+        if (body.enabled !== undefined) updateData.enabled = Boolean(body.enabled);
+        if (body.botMode !== undefined) updateData.botMode = body.botMode;
+        if (body.botAllowedJids !== undefined) updateData.botAllowedJids = body.botAllowedJids;
+        if (body.botBlockedJids !== undefined) updateData.botBlockedJids = body.botBlockedJids;
+        if (body.autoReplyMode !== undefined) updateData.autoReplyMode = body.autoReplyMode;
+        if (body.autoReplyAllowedJids !== undefined) updateData.autoReplyAllowedJids = body.autoReplyAllowedJids;
+        if (body.autoReplyBlockedJids !== undefined) updateData.autoReplyBlockedJids = body.autoReplyBlockedJids;
+        if (body.botName !== undefined) updateData.botName = body.botName;
+        if (body.enableSticker !== undefined) updateData.enableSticker = body.enableSticker;
+        if (body.enableVideoSticker !== undefined) updateData.enableVideoSticker = body.enableVideoSticker;
+        if (body.maxStickerDuration !== undefined) updateData.maxStickerDuration = body.maxStickerDuration;
+        if (body.enablePing !== undefined) updateData.enablePing = body.enablePing;
+        if (body.enableUptime !== undefined) updateData.enableUptime = body.enableUptime;
+        if (body.removeBgApiKey !== undefined) updateData.removeBgApiKey = body.removeBgApiKey || null;
+        if (body.prefix !== undefined) updateData.prefix = body.prefix;
+        if (body.antiSpamEnabled !== undefined) updateData.antiSpamEnabled = body.antiSpamEnabled;
+        if (body.spamLimit !== undefined) updateData.spamLimit = body.spamLimit;
+        if (body.spamInterval !== undefined) updateData.spamInterval = body.spamInterval;
+        if (body.spamDelayMin !== undefined) updateData.spamDelayMin = body.spamDelayMin;
+        if (body.spamDelayMax !== undefined) updateData.spamDelayMax = body.spamDelayMax;
+        if (body.welcomeMessage !== undefined) updateData.welcomeMessage = body.welcomeMessage || null;
+        if (body.autoRead !== undefined) updateData.autoRead = body.autoRead;
+        if (body.alwaysOnline !== undefined) updateData.alwaysOnline = body.alwaysOnline;
+        if (body.aiEnabled !== undefined) updateData.aiEnabled = Boolean(body.aiEnabled);
+        if (body.aiApiKey !== undefined) updateData.aiApiKey = body.aiApiKey || null;
+        if (body.aiModel !== undefined) updateData.aiModel = body.aiModel || "gemini-3.8-flash";
+        if (body.aiSystemPrompt !== undefined) updateData.aiSystemPrompt = body.aiSystemPrompt || null;
+        if (body.aiTriggerType !== undefined) updateData.aiTriggerType = body.aiTriggerType || "ALL";
+        if (body.aiContextLimit !== undefined) updateData.aiContextLimit = Number(body.aiContextLimit) || 10;
+
         // Upsert Config
         // @ts-ignore
         const config = await (prisma as any).botConfig.upsert({
@@ -115,31 +153,14 @@ export async function POST(
                 welcomeMessage: body.welcomeMessage || null,
                 autoRead: body.autoRead ?? false,
                 alwaysOnline: body.alwaysOnline ?? false,
+                aiEnabled: body.aiEnabled !== undefined ? Boolean(body.aiEnabled) : false,
+                aiApiKey: body.aiApiKey || null,
+                aiModel: body.aiModel || "gemini-3.8-flash",
+                aiSystemPrompt: body.aiSystemPrompt || null,
+                aiTriggerType: body.aiTriggerType || "ALL",
+                aiContextLimit: Number(body.aiContextLimit) || 10,
             },
-            update: {
-                botMode: body.botMode,
-                botAllowedJids: body.botAllowedJids,
-                botBlockedJids: body.botBlockedJids,
-                autoReplyMode: body.autoReplyMode,
-                autoReplyAllowedJids: body.autoReplyAllowedJids,
-                autoReplyBlockedJids: body.autoReplyBlockedJids,
-                botName: body.botName,
-                enableSticker: body.enableSticker,
-                enableVideoSticker: body.enableVideoSticker,
-                maxStickerDuration: body.maxStickerDuration,
-                enablePing: body.enablePing,
-                enableUptime: body.enableUptime,
-                removeBgApiKey: body.removeBgApiKey || null,
-                prefix: body.prefix,
-                antiSpamEnabled: body.antiSpamEnabled,
-                spamLimit: body.spamLimit,
-                spamInterval: body.spamInterval,
-                spamDelayMin: body.spamDelayMin,
-                spamDelayMax: body.spamDelayMax,
-                welcomeMessage: body.welcomeMessage,
-                autoRead: body.autoRead,
-                alwaysOnline: body.alwaysOnline,
-            }
+            update: updateData
         });
 
         return NextResponse.json({ status: true, message: "Bot config updated successfully", data: config });

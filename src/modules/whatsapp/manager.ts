@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { WhatsAppInstance } from "./instance";
 import { Server } from "socket.io";
-import { initScheduler } from "@/lib/cron";
 import { startFlowScheduler } from "@/modules/flows/engine";
 import { pauseOrphanedBroadcasts, startBroadcastScheduler } from "@/modules/broadcast/runner";
 import { logger } from "@/lib/logger";
@@ -11,9 +10,7 @@ export class WhatsAppManager {
     private sessions: Map<string, WhatsAppInstance> = new Map();
     public io: Server | null = null;
 
-    private constructor() {
-        initScheduler();
-        startFlowScheduler();
+    private constructor() {        startFlowScheduler();
         pauseOrphanedBroadcasts().catch(e => logger.error("Broadcast", "could not pause orphaned broadcasts", e));
         startBroadcastScheduler();
     }

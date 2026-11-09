@@ -188,6 +188,8 @@ model ScheduledMessage {
   cronExpression String? // e.g., '*/5 * * * *'
   recurrenceRule String? @db.Text // UI JSON state
   status      String   @default("PENDING") // PENDING, SENT, FAILED
+  groupId     String?
+  notifyJid   String?
   createdAt   DateTime @default(now())
 
   session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -284,6 +286,14 @@ model BotConfig {
   welcomeMessage  String? @db.Text
   autoRead        Boolean @default(false)
   alwaysOnline    Boolean @default(false)
+
+  // AI Configuration
+  aiEnabled       Boolean @default(false)
+  aiApiKey        String?
+  aiModel         String?
+  aiSystemPrompt  String? @db.Text
+  aiTriggerType   String?
+  aiContextLimit  Int?    @default(10)
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -701,4 +711,21 @@ model ArchiveMessage {
   @@unique([sessionId, keyId])
   @@index([chatId, timestamp, id])
   @@index([sessionId, mediaState])
+}
+
+model AffiliateConversion {
+  id           String   @id @default(cuid())
+  sessionId    String
+  platform     String   // shopee | mercadolivre
+  originalUrl  String   @db.Text
+  affiliateUrl String   @db.Text
+  productId    String?
+  tag          String?
+  senderJid    String?
+  status       String   @default("success") // success | error
+  errorMessage String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([platform, createdAt])
 }

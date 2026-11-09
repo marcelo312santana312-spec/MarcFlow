@@ -3,6 +3,14 @@ import type { WASocket } from "@whiskeysockets/baileys";
 import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { logger } from "@/lib/logger";
 import { shouldSuppressAutoReply } from "@/modules/flows/engine";
+import { generateAiReply } from "@/modules/whatsapp/ai-assistant";
+import {
+    getPlatformIntegrationStatus,
+    hasCandidateUrlsInText,
+    processIncomingAffiliateMessage,
+    resolveAffiliateEnv,
+    StoredAffiliateSettings,
+} from "@/modules/affiliate";
 
 // Helper for permission check (Deduplicate from command-handler if possible, but keep simple here)
 function canAutoReply(config: any, fromMe: boolean, senderJid: string): boolean {
@@ -12,20 +20,8 @@ function canAutoReply(config: any, fromMe: boolean, senderJid: string): boolean 
     const mode = config.autoReplyMode || 'ALL';
 
     if (fromMe) {
-        // If mode is OWNER, it triggers for ME? 
-        // Auto Reply usually replies TO someone. 
-        // If I send a message, and mode is OWNER, should it reply to me? 
-        // User requested "Self Mode" -> Use case: Snippets.
-        // So yes, if fromMe checks out.
-
-        // However, standard auto-reply logic (replying to incoming) should be blocked if fromMe is true AND mode is ALL?
-        // No, typically Auto Reply doesn't trigger on own messages to prevent unexpected loops.
-        // But for "Self Mode" (Macros), it MUST trigger on own messages.
-
         if (mode === 'OWNER') return true;
         if (mode === 'ALL') return false; // Standard auto-reply ignores self
-
-        // Specific? 
         return false;
     } else {
         // Incoming message from others
@@ -52,7 +48,101 @@ function canAutoReply(config: any, fromMe: boolean, senderJid: string): boolean 
     return false;
 }
 
+export function ensureAffiliateSocketBound(sock: WASocket, sessionId: string) {
+    try {
+        const { waManager } = require("../manager");
+        const inst = waManager?.getInstance?.(sessionId);
+        if (inst && !inst.__affiliateInitWrapped) {
+            inst.__affiliateInitWrapped = true;
+            const origInit = inst.init.bind(inst);
+            inst.init = async function (...args: any[]) {
+                const res = await origInit(...args);
+                if (this.socket) {
+                    ensureAffiliateSocketBound(this.socket, sessionId);
+                }
+                return res;
+            };
+        }
+    } catch {}
+
+    // Se o autoReply principal já está ativo no socket, ele já coordena os afiliados
+    if ((sock as any).__autoReplyBound || (sock as any).__affiliateAutoReplyBound) return;
+    (sock as any).__affiliateAutoReplyBound = true;
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        let affiliateSettings: StoredAffiliateSettings | null = null;
+        try {
+            const s = await prisma.session.findUnique({
+                where: { sessionId },
+                select: { config: true },
+            });
+            affiliateSettings = ((s?.config as any)?.affiliate as StoredAffiliateSettings) || null;
+        } catch {}
+
+        const effectiveEnv = resolveAffiliateEnv(affiliateSettings, process.env);
+        const affiliateAutoReplyEnabled =
+            affiliateSettings?.enabled !== undefined
+                ? affiliateSettings.enabled
+                : effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED === "true" ||
+                  (effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED !== "false" &&
+                      (getPlatformIntegrationStatus("mercadolivre", effectiveEnv).configured ||
+                          getPlatformIntegrationStatus("shopee", effectiveEnv).configured));
+
+        if (!affiliateAutoReplyEnabled) return;
+
+        for (const msg of messages) {
+            try {
+                const fromMe = msg.key.fromMe || false;
+                const remoteJid = msg.key.remoteJid;
+                if (!remoteJid || fromMe) continue;
+
+                const isGroup = remoteJid.endsWith("@g.us");
+                if (isGroup || remoteJid === "status@broadcast" || remoteJid.endsWith("@newsletter")) continue;
+
+                const content = normalizeMessageContent(msg.message);
+                const text =
+                    content?.conversation ||
+                    content?.extendedTextMessage?.text ||
+                    content?.imageMessage?.caption ||
+                    content?.videoMessage?.caption ||
+                    "";
+
+                if (!text || !hasCandidateUrlsInText(text)) continue;
+
+                const remoteJidAlt = msg.key.remoteJidAlt;
+                const effectiveRemoteJid =
+                    !isGroup && remoteJid.endsWith("@lid") && remoteJidAlt
+                        ? remoteJidAlt
+                        : remoteJid;
+
+                await processIncomingAffiliateMessage(
+                    {
+                        sessionId,
+                        messageId: msg.key.id || `${Date.now()}`,
+                        remoteJid: effectiveRemoteJid,
+                        fromMe,
+                        isGroup,
+                        text,
+                    },
+                    {
+                        settings: affiliateSettings,
+                        sendText: async (_recipientJid, replyText) => {
+                            await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+                        },
+                    }
+                );
+            } catch (err) {
+                logger.error("Affiliate", "Erro ao processar mensagem de afiliado em tempo real", err);
+            }
+        }
+    });
+    logger.info("Affiliate", `Listener de afiliados vinculado na sessão ${sessionId}`);
+}
+
 export async function bindAutoReply(sock: WASocket, sessionId: string) {
+    ensureAffiliateSocketBound(sock, sessionId);
     // connection.open fires on every reconnect; bind once per socket or replies get duplicated
     if ((sock as any).__autoReplyBound) return;
     (sock as any).__autoReplyBound = true;
@@ -106,9 +196,18 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
             if (!canAutoReply(config, fromMe, senderJid)) continue;
 
             const content = normalizeMessageContent(msg.message);
-            const text = content?.conversation || content?.extendedTextMessage?.text || ""; // Caption?
+            const text =
+                content?.conversation ||
+                content?.extendedTextMessage?.text ||
+                content?.imageMessage?.caption ||
+                content?.videoMessage?.caption ||
+                "";
 
             if (!text) continue;
+
+            // Skip if starts with bot command prefix
+            const prefix = config.prefix || "#";
+            if (text.trim().startsWith(prefix)) continue;
 
             if (await shouldSuppressAutoReply(sessionId, [remoteJid, remoteJidAlt, senderJid], text).catch(() => false)) continue;
 
@@ -121,6 +220,8 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
                         }
                     }
                 });
+
+                let matchedRule = false;
 
                 for (const rule of rules) {
                     let match = false;
@@ -146,13 +247,13 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
 
                     if (match) {
                         // Check trigger context (GROUP, PRIVATE, or ALL)
-                        const isGroup = remoteJid.endsWith('@g.us');
-                        const triggerType = (rule as any).triggerType || 'ALL'; // Default to ALL if undefined
+                        const triggerType = (rule as any).triggerType || 'ALL';
 
                         if (triggerType === 'GROUP' && !isGroup) continue;
                         if (triggerType === 'PRIVATE' && isGroup) continue;
 
                         logger.info("AutoReply", `Match: ${rule.keyword} -> ${remoteJid}`);
+                        matchedRule = true;
 
                         if (rule.isMedia && rule.mediaUrl) {
                             const url = rule.mediaUrl;
@@ -188,6 +289,73 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
                         }
 
                         break;
+                    }
+                }
+
+                // Conversão automática de links de afiliado (Mercado Livre / Shopee) em chat direto (DM)
+                const affiliateSettings = ((session as any)?.config?.affiliate as StoredAffiliateSettings) || null;
+                const effectiveEnv = resolveAffiliateEnv(affiliateSettings, process.env);
+                const affiliateAutoReplyEnabled =
+                    affiliateSettings?.enabled !== undefined
+                        ? affiliateSettings.enabled
+                        : effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED === "true" ||
+                          (effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED !== "false" &&
+                              (getPlatformIntegrationStatus("mercadolivre", effectiveEnv).configured ||
+                                  getPlatformIntegrationStatus("shopee", effectiveEnv).configured));
+
+                let isAffiliateCandidate = false;
+
+                if (!matchedRule && !fromMe && !isGroup && affiliateAutoReplyEnabled && hasCandidateUrlsInText(text)) {
+                    isAffiliateCandidate = true;
+                    const effectiveRemoteJid =
+                        !isGroup && remoteJid.endsWith("@lid") && remoteJidAlt
+                            ? remoteJidAlt
+                            : remoteJid;
+                    const affResult = await processIncomingAffiliateMessage(
+                        {
+                            sessionId,
+                            messageId: msg.key.id || `${Date.now()}`,
+                            remoteJid: effectiveRemoteJid,
+                            fromMe,
+                            isGroup,
+                            text,
+                        },
+                        {
+                            settings: affiliateSettings,
+                            sendText: async (_recipientJid, replyText) => {
+                                await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+                            },
+                        }
+                    );
+                    if (affResult.action === "replied") {
+                        matchedRule = true;
+                    }
+                }
+
+                // Fallback to Google Gemini AI Assistant if enabled and no keyword rule matched and NOT an affiliate candidate message
+                if (!matchedRule && !fromMe && config.aiEnabled && !isAffiliateCandidate) {
+                    const aiTriggerType = config.aiTriggerType || 'ALL';
+                    if (aiTriggerType === 'GROUP' && !isGroup) continue;
+                    if (aiTriggerType === 'PRIVATE' && isGroup) continue;
+
+                    await sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
+
+                    const aiReply = await generateAiReply({
+                        sessionId: session.id,
+                        remoteJid,
+                        senderName: msg.pushName,
+                        incomingText: text,
+                        apiKey: config.aiApiKey || "",
+                        model: config.aiModel || "gemini-3.8-flash",
+                        systemPrompt: config.aiSystemPrompt,
+                        contextLimit: config.aiContextLimit || 10,
+                    });
+
+                    await sock.sendPresenceUpdate('paused', remoteJid).catch(() => {});
+
+                    if (aiReply) {
+                        logger.info("AIAssistant", `Replied to ${remoteJid} via ${config.aiModel || "gemini-3.8-flash"}`);
+                        await sock.sendMessage(remoteJid, { text: aiReply }, { quoted: msg });
                     }
                 }
 

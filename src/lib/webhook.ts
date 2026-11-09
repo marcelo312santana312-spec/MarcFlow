@@ -7,6 +7,14 @@ import pino from "pino";
 import { resolveToPhoneJidBySessionId as resolveToPhoneJid, isLidJid } from "./jid-utils";
 import { logger } from "./logger";
 import { waManager } from "@/modules/whatsapp/manager";
+import { ensureAffiliateSocketBound } from "@/modules/whatsapp/store/autoreply";
+import {
+    getPlatformIntegrationStatus,
+    hasCandidateUrlsInText,
+    processIncomingAffiliateMessage,
+    resolveAffiliateEnv,
+    StoredAffiliateSettings,
+} from "@/modules/affiliate";
 
 // Event types that can trigger webhooks
 export type WebhookEventType =
@@ -95,7 +103,12 @@ export async function dispatchWebhook(
 
             // Send webhook in background
             sendWebhookRequest(webhook.url, payload, webhook.secret, webhook.id).catch(err => {
-                logger.error("Webhook", `Webhook ${webhook.id} failed:`, err);
+                const msg = err?.message || String(err);
+                if (msg.includes("timeout") || msg.includes("aborted")) {
+                    logger.warn("Webhook", `Webhook ${webhook.id} timeout (${webhook.url})`);
+                } else {
+                    logger.error("Webhook", `Webhook ${webhook.id} failed:`, err);
+                }
             });
         }
     } catch (error) {
@@ -160,16 +173,44 @@ async function sendWebhookRequest(url: string, payload: WebhookPayload, secret?:
             method: "POST",
             headers,
             body,
-            signal: AbortSignal.timeout(10000) // 10 second timeout
+            signal: AbortSignal.timeout(25000) // 25 second timeout (supports cold-starts on Vercel)
         });
 
-        responseBody = await response.text().catch(() => undefined);
+        const fullResponseBody = await response.text().catch(() => undefined);
+        responseBody = fullResponseBody;
         if (responseBody && responseBody.length > 1024) {
             responseBody = responseBody.substring(0, 1024);
         }
 
         if (!response.ok) {
             errorMessage = `Webhook returned ${response.status}: ${response.statusText}`;
+        } else if (fullResponseBody && payload.event === "message.received") {
+            try {
+                const parsed = JSON.parse(fullResponseBody);
+                if (
+                    parsed?.ok &&
+                    parsed?.processado &&
+                    parsed?.respostaWhatsapp &&
+                    !parsed?.enviadoPeloServidor
+                ) {
+                    const replyJid = payload.data?.from || payload.data?.key?.remoteJid;
+                    const instance = waManager.getInstance(payload.sessionId);
+                    if (instance?.socket && replyJid) {
+                        const texto = String(parsed.respostaWhatsapp);
+                        const sendRes = await instance.socket.sendMessage(replyJid, {
+                            text: texto,
+                        });
+                        await fireSentWebhook(
+                            payload.sessionId,
+                            replyJid,
+                            { type: "text", text: texto },
+                            sendRes
+                        );
+                    }
+                }
+            } catch {
+                // Ignora respostas que não sejam JSON
+            }
         }
     } catch (err: any) {
         errorMessage = err.message || "Webhook request failed";
@@ -385,6 +426,12 @@ export async function downloadAndSaveMedia(message: WAMessage, sessionId: string
             return null;
         }
 
+        // Não tentar baixar nossa própria postagem de Status/Story da CDN do WhatsApp
+        if (message.key?.fromMe && message.key?.remoteJid === 'status@broadcast') {
+            logger.debug("Media", "Skipping media download for self-posted status story.");
+            return null;
+        }
+
         logger.info("Media", `Attempting to download ${messageType}...`);
 
         let buffer: Buffer | null = null;
@@ -425,7 +472,11 @@ export async function downloadAndSaveMedia(message: WAMessage, sessionId: string
                     {}
                 ) as Buffer;
             } catch (e) {
-                logger.error("Media", "Failed to download encrypted media:", e);
+                if (message.key?.fromMe) {
+                    logger.debug("Media", "Skipping download of own outgoing media (CDN not cached or not needed)");
+                } else {
+                    logger.error("Media", "Failed to download encrypted media:", e);
+                }
                 return null;
             }
         }
@@ -556,6 +607,59 @@ export async function onMessageReceived(sessionId: string, message: any, existin
 
     const normalized = extractMessageContent(message);
     const quoted = await extractQuotedMessageAsync(message, sessionId);
+
+    // Processa conversão automática de link de afiliados (Shopee / Mercado Livre) em conversas diretas
+    if (!fromMe && !isGroup && normalized.content && hasCandidateUrlsInText(normalized.content)) {
+        (async () => {
+            try {
+                const instance = waManager.getInstance(sessionId);
+                if (instance?.socket) {
+                    ensureAffiliateSocketBound(instance.socket, sessionId);
+                }
+
+                const s = await prisma.session.findUnique({
+                    where: { sessionId },
+                    select: { config: true },
+                });
+                const affiliateSettings = ((s?.config as any)?.affiliate as StoredAffiliateSettings) || null;
+                const effectiveEnv = resolveAffiliateEnv(affiliateSettings, process.env);
+                const affiliateAutoReplyEnabled =
+                    affiliateSettings?.enabled !== undefined
+                        ? affiliateSettings.enabled
+                        : effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED === "true" ||
+                          (effectiveEnv.AFFILIATE_AUTO_REPLY_ENABLED !== "false" &&
+                              (getPlatformIntegrationStatus("mercadolivre", effectiveEnv).configured ||
+                                  getPlatformIntegrationStatus("shopee", effectiveEnv).configured));
+
+                if (!affiliateAutoReplyEnabled) return;
+
+                await processIncomingAffiliateMessage(
+                    {
+                        sessionId,
+                        messageId: message.key?.id || `${Date.now()}`,
+                        remoteJid: normalizedFrom || remoteJid,
+                        fromMe: false,
+                        isGroup: false,
+                        text: normalized.content,
+                    },
+                    {
+                        settings: affiliateSettings,
+                        sendText: async (recipientJid, replyText) => {
+                            const inst = waManager.getInstance(sessionId);
+                            if (!inst?.socket) return;
+                            await inst.socket.sendMessage(
+                                remoteJid,
+                                { text: replyText },
+                                { quoted: message }
+                            );
+                        },
+                    }
+                );
+            } catch (err) {
+                logger.error("Affiliate", "Erro ao processar mensagem de afiliado em onMessageReceived", err);
+            }
+        })();
+    }
 
     dispatchWebhook(sessionId, "message.received", {
         key: {

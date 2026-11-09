@@ -48,6 +48,12 @@ export default function BotSettingsPage() {
         botBlockedJids: [] as string[],
         autoReplyAllowedJids: [] as string[],
         autoReplyBlockedJids: [] as string[],
+        aiEnabled: false,
+        aiApiKey: "",
+        aiModel: "gemini-3.8-flash",
+        aiSystemPrompt: "",
+        aiTriggerType: "ALL",
+        aiContextLimit: 10,
     });
     const [botLoading, setBotLoading] = useState(false);
 
@@ -78,6 +84,12 @@ export default function BotSettingsPage() {
                         botBlockedJids: data.botBlockedJids || [],
                         autoReplyAllowedJids: data.autoReplyAllowedJids || [],
                         autoReplyBlockedJids: data.autoReplyBlockedJids || [],
+                        aiEnabled: Boolean(data.aiEnabled),
+                        aiApiKey: data.aiApiKey || "",
+                        aiModel: data.aiModel || "gemini-3.8-flash",
+                        aiSystemPrompt: data.aiSystemPrompt || "",
+                        aiTriggerType: data.aiTriggerType || "ALL",
+                        aiContextLimit: Number(data.aiContextLimit) || 10,
                     }));
                 }
             })
@@ -97,6 +109,27 @@ export default function BotSettingsPage() {
             })
             .catch(() => { });
     }, [sessionId]);
+
+    const handleToggleAi = async (checked: boolean) => {
+        setBotConfig(prev => ({ ...prev, aiEnabled: checked }));
+        if (!sessionId) return;
+        try {
+            const res = await fetch(`/api/sessions/${sessionId}/bot-config`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ aiEnabled: checked })
+            });
+            if (res.ok) {
+                toast.success(checked ? "Atendimento com IA ativado com sucesso" : "Atendimento com IA desativado com sucesso");
+            } else {
+                setBotConfig(prev => ({ ...prev, aiEnabled: !checked }));
+                toast.error("Falha ao salvar status da IA");
+            }
+        } catch {
+            setBotConfig(prev => ({ ...prev, aiEnabled: !checked }));
+            toast.error("Erro ao comunicar com o servidor");
+        }
+    };
 
     const handleSaveBot = async () => {
         if (!sessionId) return;
@@ -180,6 +213,119 @@ export default function BotSettingsPage() {
                     <h2 className="text-xl sm:text-3xl font-bold tracking-tight">Configurações do bot</h2>
                     <p className="text-muted-foreground text-sm mt-1">Configure os recursos do bot e a privacidade da sessão do WhatsApp ativa.</p>
                 </div>
+
+                {/* Google Gemini AI Assistant Section */}
+                <Card className="border-primary/30">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <Bot className="h-5 w-5 text-primary" />
+                            Assistente de IA (Google Gemini)
+                        </CardTitle>
+                        <CardDescription>
+                            Responda seus clientes automaticamente com Inteligência Artificial quando nenhum fluxo ou palavra-chave exata for acionado.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                        <div className="flex items-center justify-between space-x-2 border p-3 rounded-lg bg-primary/5 border-primary/20">
+                            <Label htmlFor="ai-enabled" className="flex flex-col space-y-1 cursor-pointer">
+                                <span className="font-semibold">Ativar atendimento automático com IA</span>
+                                <span className="font-normal text-xs text-muted-foreground">
+                                    A IA mantém o contexto da conversa e pausa sozinha quando um atendente humano assume o chat.
+                                </span>
+                            </Label>
+                            <Switch
+                                id="ai-enabled"
+                                checked={botConfig.aiEnabled}
+                                onCheckedChange={handleToggleAi}
+                            />
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <div className="grid gap-2">
+                                <Label>Chave de API do Google Gemini (API Key)</Label>
+                                <Input
+                                    type="password"
+                                    placeholder="AIzaSy..."
+                                    value={botConfig.aiApiKey}
+                                    onChange={(e) => setBotConfig(prev => ({ ...prev, aiApiKey: e.target.value }))}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Gere gratuitamente no <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="underline text-primary">Google AI Studio</a>.
+                                </p>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <Label>Modelo do Gemini</Label>
+                                <Select
+                                    value={botConfig.aiModel}
+                                    onValueChange={(v) => setBotConfig(prev => ({ ...prev, aiModel: v }))}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Selecione o modelo" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="gemini-3.8-flash">Gemini 3.8 Flash (Recomendado - Mais Inteligente)</SelectItem>
+                                        <SelectItem value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Mais Rápido e Econômico)</SelectItem>
+                                        <SelectItem value="gemini-3.5-flash">Gemini 3.5 Flash</SelectItem>
+                                        <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                                        <SelectItem value="gemini-flash-latest">Gemini Flash Latest</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <p className="text-xs text-muted-foreground">Escolha o modelo usado para gerar as respostas.</p>
+                            </div>
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <div className="grid gap-2">
+                                <Label>Onde a IA deve responder</Label>
+                                <Select
+                                    value={botConfig.aiTriggerType}
+                                    onValueChange={(v) => setBotConfig(prev => ({ ...prev, aiTriggerType: v }))}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Selecione onde responder" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="ALL">Todas as mensagens (Privado + Grupos)</SelectItem>
+                                        <SelectItem value="PRIVATE">Somente conversas privadas</SelectItem>
+                                        <SelectItem value="GROUP">Somente grupos</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <Label>Memória de contexto (últimas mensagens): <strong>{botConfig.aiContextLimit}</strong></Label>
+                                <Input
+                                    type="number"
+                                    min={1}
+                                    max={30}
+                                    value={botConfig.aiContextLimit}
+                                    onChange={(e) => setBotConfig(prev => ({ ...prev, aiContextLimit: parseInt(e.target.value) || 10 }))}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid gap-2">
+                            <Label>Instruções do Assistente (Prompt do Sistema)</Label>
+                            <Textarea
+                                placeholder="Ex.: Você é o atendente virtual da Loja X. Nossos horários são de segunda a sexta das 9h às 18h. Responda sempre de forma simpática, curta e objetiva..."
+                                className="min-h-[120px]"
+                                value={botConfig.aiSystemPrompt}
+                                onChange={(e) => setBotConfig(prev => ({ ...prev, aiSystemPrompt: e.target.value }))}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Descreva como o robô deve se comportar, informações sobre seus produtos/serviços, preços, horários e regras de atendimento.
+                            </p>
+                        </div>
+
+                        <div className="pt-2">
+                            <Button className="w-full sm:w-auto" onClick={handleSaveBot} disabled={botLoading || !sessionId}>
+                                {botLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                Salvar configurações de IA
+                            </Button>
+                        </div>
+                    </CardContent>
+                </Card>
 
                 {/* Bot Mode & Access Section */}
                 <Card>

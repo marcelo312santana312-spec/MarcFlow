@@ -122,6 +122,7 @@ function Body({ node, color }: { node: FlowNode; color: string }) {
                     </div>
                     <div className="mr-3 text-[12px]">
                         {d.mode === "poll" && <span className="mb-1 inline-block rounded px-1.5 text-[10px] font-semibold" style={{ background: `${color}18`, color }}>📊 Enquete</span>}
+                        {d.mode === "list" && <span className="mb-1 inline-block rounded px-1.5 text-[10px] font-semibold" style={{ background: `${color}18`, color }}>📋 Lista ({d.buttonText || "Ver opções"})</span>}
                         {d.question ? <PreviewText text={d.question} className="line-clamp-3 whitespace-pre-wrap" /> : empty("Escreva a pergunta")}
                     </div>
                     {d.options.map((o, i) => (

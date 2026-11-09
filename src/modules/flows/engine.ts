@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import fs from "fs/promises";
 import moment from "moment-timezone";
-import { decryptPollVote, jidNormalizedUser, normalizeMessageContent, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
+import { decryptPollVote, generateWAMessageFromContent, jidNormalizedUser, normalizeMessageContent, proto, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
 import { Prisma, type FlowRun } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
@@ -227,6 +227,84 @@ async function sendPoll(ctx: Ctx, nodeId: string, name: string, values: string[]
     return { id: sent.key.id, secret: secret.toString("base64"), creators: [me?.id, me?.lid].filter((j): j is string => !!j).map(jidNormalizedUser), values };
 }
 
+/** Sends an interactive WhatsApp dropdown list ("Ver opções" / single_select) via nativeFlowMessage + biz node. */
+async function sendList(ctx: Ctx, nodeId: string, name: string, buttonText: string, values: string[]) {
+    const btnTitle = (buttonText || "Ver opções").trim().slice(0, 20) || "Ver opções";
+    const shown = `📋 ${name} [${btnTitle}]\n\n${values.map((v, i) => `${i + 1}. ${v}`).join("\n")}`;
+    if (isSimJid(ctx.jid)) {
+        await log(ctx.run.id, nodeId, "SEND", { summary: shown, text: shown, simulated: true });
+        return;
+    }
+    const sock = await getSocket(ctx.sessionId);
+    if (!sock) throw new Error("Sessão do WhatsApp desconectada");
+
+    const sections = [{
+        title: btnTitle,
+        rows: values.map((v, i) => ({
+            header: "",
+            title: v.slice(0, 24),
+            description: v.length > 24 ? v.slice(0, 72) : "",
+            id: String(i + 1),
+        })),
+    }];
+
+    const interactiveMessage = proto.Message.InteractiveMessage.create({
+        body: proto.Message.InteractiveMessage.Body.create({ text: name }),
+        footer: proto.Message.InteractiveMessage.Footer.create({ text: "Toque no botão abaixo ou digite o número da opção" }),
+        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+            buttons: [
+                {
+                    name: "single_select",
+                    buttonParamsJson: JSON.stringify({
+                        title: btnTitle,
+                        sections,
+                    }),
+                },
+            ],
+        }),
+    });
+
+    const waMsg = generateWAMessageFromContent(
+        ctx.jid,
+        {
+            viewOnceMessage: {
+                message: {
+                    messageContextInfo: {
+                        deviceListMetadata: {},
+                        deviceListMetadataVersion: 2,
+                    },
+                    interactiveMessage,
+                },
+            },
+        },
+        { userJid: sock.user?.id || ctx.jid }
+    );
+
+    await sock.relayMessage(ctx.jid, waMsg.message!, {
+        messageId: waMsg.key.id!,
+        additionalNodes: [
+            {
+                tag: "biz",
+                attrs: {},
+                content: [
+                    {
+                        tag: "interactive",
+                        attrs: { type: "native_flow", v: "1" },
+                        content: [
+                            {
+                                tag: "native_flow",
+                                attrs: { v: "9", name: "mixed" },
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    });
+
+    await log(ctx.run.id, nodeId, "SEND", { summary: shown });
+}
+
 // ---------- actions ----------
 async function runAction(ctx: Ctx, nodeId: string, a: FlowAction, vars: Record<string, string>) {
     switch (a.type) {
@@ -341,6 +419,8 @@ async function execute(ctx: Ctx, startNodeId: string | null, startItem = 0): Pro
                     const d = node.data as MenuData;
                     const poll = d.mode === "poll"
                         ? await sendPoll(ctx, node.id, renderTemplate(d.question, vars), d.options.map(o => renderTemplate(o.text, vars)))
+                        : d.mode === "list"
+                        ? (await sendList(ctx, node.id, renderTemplate(d.question, vars), renderTemplate(d.buttonText || "Ver opções", vars), d.options.map(o => renderTemplate(o.text, vars))), undefined)
                         : (await send(ctx, node.id, { text: renderTemplate(menuText(d.question, d.options), vars) }, d.question.slice(0, 80)), undefined);
                     const resumeAt = new Date(Date.now() + Math.max(1, d.expireValue) * unitMs[d.expireUnit]);
                     await save(ctx, { status: "WAITING_INPUT", wait: { kind: "menu", nodeId: node.id, errors: 0, ...(poll ? { poll } : {}) }, resumeAt });
