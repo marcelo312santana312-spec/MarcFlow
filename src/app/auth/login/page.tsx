@@ -52,7 +52,7 @@ function LoginForm() {
       if (result?.error) {
         setError("E-mail ou senha inválidos");
       } else {
-        window.location.href = callbackUrl;
+        let dest = callbackUrl; try { if (dest.startsWith("http://") || dest.startsWith("https://")) { const u = new URL(dest); dest = u.pathname + u.search; } } catch {} if (!dest || dest === "/" || dest.includes("/auth/login")) dest = "/dashboard"; window.location.href = dest;
         router.refresh();
       }
     } catch (err) {
