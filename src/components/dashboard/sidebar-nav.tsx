@@ -29,7 +29,8 @@ import {
     Contact,
     UserPlus,
     DatabaseBackup,
-    ShoppingBag
+    ShoppingBag,
+    Sparkles
 } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 import {
@@ -81,6 +82,7 @@ export const navGroups: NavGroup[] = [
     {
         label: "Automação",
         items: [
+            { href: "/dashboard/ai-studio", label: "Estúdio IA (Flow)", icon: Sparkles },
             { href: "/dashboard/flows", label: "Fluxos de conversa", icon: Workflow },
             { href: "/dashboard/bot-settings", label: "Configurações do bot", icon: Bot },
             { href: "/dashboard/autoreply", label: "Resposta automática", icon: MessageCircleReply },

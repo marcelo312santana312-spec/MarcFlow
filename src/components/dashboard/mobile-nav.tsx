@@ -31,6 +31,7 @@ import {
     UserPlus,
     DatabaseBackup,
     ShoppingBag,
+    Sparkles,
 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
@@ -70,6 +71,7 @@ const navGroups: NavGroup[] = [
     {
         label: "Automação",
         items: [
+            { href: "/dashboard/ai-studio", label: "Estúdio IA (Flow)", icon: Sparkles },
             { href: "/dashboard/flows", label: "Fluxos de conversa", icon: Workflow },
             { href: "/dashboard/bot-settings", label: "Configurações do bot", icon: Bot },
             { href: "/dashboard/autoreply", label: "Resposta automática", icon: MessageCircleReply },
