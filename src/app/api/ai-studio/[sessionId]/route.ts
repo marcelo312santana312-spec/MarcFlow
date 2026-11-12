@@ -83,8 +83,16 @@ async function resolveGeminiApiKey(sessionId: string): Promise<{ apiKey: string 
 
 function createGenAIClients(apiKey: string): { primary: GoogleGenAI; secondary: GoogleGenAI; isVertexKey: boolean } {
     const isVertexKey = apiKey.startsWith("AQ.");
-    const primary = new GoogleGenAI(isVertexKey ? { vertexai: true, apiKey } : { apiKey });
-    const secondary = new GoogleGenAI(isVertexKey ? { vertexai: false, apiKey } : { vertexai: true, apiKey });
+    const primary = new GoogleGenAI(
+        isVertexKey
+            ? { vertexai: true, apiKey, project: "764911395009", location: "us-central1" }
+            : { apiKey }
+    );
+    const secondary = new GoogleGenAI(
+        isVertexKey
+            ? { vertexai: false, apiKey }
+            : { vertexai: true, apiKey, project: "764911395009", location: "us-central1" }
+    );
     return { primary, secondary, isVertexKey };
 }
 
@@ -955,10 +963,14 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             let usedModel = requestedModel;
 
             try {
+                const veoModel = requestedModel.startsWith("veo-") ? requestedModel : "veo-2.0-generate-001";
+                logger.info("AiStudio", `Enviando solicitação de vídeo cinematográfico ao Google Veo (${veoModel})...`);
                 let operation = await ai.models.generateVideos({
-                    model: requestedModel,
-                    prompt: fullPrompt,
-                    ...(imageInput ? { image: imageInput } : {}),
+                    model: veoModel,
+                    source: {
+                        prompt: fullPrompt,
+                        ...(imageInput ? { image: imageInput } : {}),
+                    },
                     config: {
                         numberOfVideos: 1,
                         aspectRatio,
