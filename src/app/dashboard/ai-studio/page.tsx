@@ -123,7 +123,7 @@ export default function AiStudioPage() {
     const [caption, setCaption] = useState("");
     const [stylePreset, setStylePreset] = useState(STYLE_PRESETS[0].value);
     const [aspectRatio, setAspectRatio] = useState<"9:16" | "1:1" | "16:9">("9:16");
-    const [imageModel, setImageModel] = useState("auto");
+    const [imageModel, setImageModel] = useState("flux-1-ultra-hd");
     const [videoModel, setVideoModel] = useState("veo-2.0-generate-001");
 
     // Reference image (upload or gallery selection for Image-to-Video / Product Scene)
@@ -667,10 +667,10 @@ export default function AiStudioPage() {
                                         onChange={(e) => setImageModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="auto">⚡ Automático (Gemini Flash Image + Flux HD)</option>
+                                        <option value="flux-1-ultra-hd">📸 Black Forest Labs FLUX.1 Ultra-HD (Fotográfico 8K)</option>
+                                        <option value="auto">⚡ Automático (Gemini Flash Image + FLUX.1)</option>
                                         <option value="gemini-2.5-flash-image">🎨 Gemini 2.5 Flash Image (Nano Banana)</option>
-                                        <option value="gemini-3.1-flash-image">📸 Gemini 3.1 Flash Image (Nano Banana 2)</option>
-                                        <option value="gemini-nano-banana-2.1">🚀 Gemini Nano Banana 2.1 (Ultra HD)</option>
+                                        <option value="gemini-3.1-flash-image">🚀 Gemini 3.1 Flash Image (Nano Banana 2)</option>
                                     </select>
                                 ) : (
                                     <select

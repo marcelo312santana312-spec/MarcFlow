@@ -80,10 +80,11 @@ async function resolveGeminiApiKey(sessionId: string): Promise<{ apiKey: string 
     };
 }
 
-function createGenAIClient(apiKey: string): { ai: GoogleGenAI; isVertexKey: boolean } {
+function createGenAIClients(apiKey: string): { primary: GoogleGenAI; secondary: GoogleGenAI; isVertexKey: boolean } {
     const isVertexKey = apiKey.startsWith("AQ.");
-    const ai = new GoogleGenAI(isVertexKey ? { vertexai: true, apiKey } : { apiKey });
-    return { ai, isVertexKey };
+    const primary = new GoogleGenAI(isVertexKey ? { vertexai: true, apiKey } : { apiKey });
+    const secondary = new GoogleGenAI(isVertexKey ? { vertexai: false, apiKey } : { vertexai: true, apiKey });
+    return { primary, secondary, isVertexKey };
 }
 
 function sanitizeJid(rawJid: string): string {
@@ -95,37 +96,56 @@ function sanitizeJid(rawJid: string): string {
     return `${cleanNumber}@s.whatsapp.net`;
 }
 
+async function translatePtToEnFree(text: string): Promise<string> {
+    try {
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(text)}`;
+        const { stdout } = await execFileAsync("curl", ["-4", "-fsSL", "--max-time", "10", url], {
+            encoding: "utf8",
+        });
+        const parsed = JSON.parse(stdout);
+        if (Array.isArray(parsed?.[0])) {
+            const joined = parsed[0].map((seg: any) => seg?.[0] || "").join("");
+            if (joined.trim()) return joined.trim();
+        }
+    } catch {}
+    return text;
+}
+
 async function generateTextWithGeminiFallback(
-    ai: GoogleGenAI,
+    apiKey: string,
     contents: any,
     config?: Record<string, any>
 ): Promise<string> {
+    const { primary, secondary } = createGenAIClients(apiKey);
     const textModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"];
     let lastErr: any = null;
-    for (const model of textModels) {
-        try {
-            const res = await ai.models.generateContent({
-                model,
-                contents,
-                config,
-            });
-            if (res.text) return res.text;
-        } catch (err) {
-            lastErr = err;
+
+    for (const client of [primary, secondary]) {
+        for (const model of textModels) {
+            try {
+                const res = await client.models.generateContent({
+                    model,
+                    contents,
+                    config,
+                });
+                if (res.text) return res.text;
+            } catch (err) {
+                lastErr = err;
+            }
         }
     }
     throw lastErr || new Error("Falha ao comunicar com os modelos de texto do Gemini.");
 }
 
 async function buildEnglishVisualPromptWithGemini(
-    ai: GoogleGenAI,
+    apiKey: string,
     rawPrompt: string,
     stylePreset: string,
     referenceImageBase64?: string | null,
     referenceImageMimeType?: string
 ): Promise<string> {
     const photoPrefix =
-        "RAW photo, photorealistic DSLR photography, 85mm f/1.4 lens, ultra-detailed realistic skin and surface texture, natural lighting, 8k resolution, sharp focus:";
+        "RAW photo, photorealistic DSLR photography, 85mm f/1.4 lens, ultra-detailed realistic skin and surface texture, natural golden hour lighting, 8k resolution, sharp focus:";
     try {
         const contents: any[] = [];
         if (referenceImageBase64) {
@@ -143,15 +163,18 @@ async function buildEnglishVisualPromptWithGemini(
                 text: `Translate and enhance this visual prompt into a hyper-realistic English DSLR photography prompt (max 75 words, no quotes, no markdown). Idea: "${rawPrompt}". Style: "${stylePreset}". Must look like a real photograph taken with a full-frame camera, never a drawing or illustration.`,
             });
         }
-        const out = await generateTextWithGeminiFallback(ai, contents);
+        const out = await generateTextWithGeminiFallback(apiKey, contents);
         const cleaned = out.replace(/[\r\n]+/g, " ").trim();
         if (cleaned) {
             return `${photoPrefix} ${cleaned}`;
         }
     } catch (e: any) {
-        logger.warn("AiStudio", `Tradutor de prompt Gemini falhou (${e?.message?.slice(0, 80)}), usando prompt fotográfico direto.`);
+        logger.warn("AiStudio", `Tradutor Gemini indisponível (${e?.message?.slice(0, 80)}), usando tradutor direto PT->EN.`);
     }
-    return `${photoPrefix} ${rawPrompt}. ${stylePreset}`;
+
+    const translatedIdea = await translatePtToEnFree(rawPrompt);
+    const translatedStyle = stylePreset ? await translatePtToEnFree(stylePreset) : "";
+    return `${photoPrefix} ${translatedIdea}. ${translatedStyle}`.trim();
 }
 
 async function fetchBlackForestFluxUltraHd(
@@ -165,7 +188,6 @@ async function fetchBlackForestFluxUltraHd(
             ? { width: 1344, height: 768 }
             : { width: 1024, height: 1024 };
 
-    // 1. Motor Principal: Black Forest Labs FLUX.1 Oficial (Qualidade Fotográfica 8K Realista sem marca d'água)
     const bflSpaces = [
         "https://black-forest-labs-flux-1-schnell.hf.space",
         "https://black-forest-labs-flux-1-dev.hf.space",
@@ -219,7 +241,6 @@ async function fetchBlackForestFluxUltraHd(
             );
 
             if (rawImgBuf && rawImgBuf.length > 5000) {
-                // Converte de WebP para PNG de altíssima fidelidade usando Sharp
                 const pngBuffer = await sharp(rawImgBuf).png({ quality: 100 }).toBuffer();
                 return pngBuffer;
             }
@@ -367,9 +388,9 @@ export async function POST(
             );
         }
 
-        const { ai, isVertexKey } = createGenAIClient(apiKey);
+        const { primary: ai, isVertexKey } = createGenAIClients(apiKey);
 
-        // 2. Otimizar Prompt + Gerar Legenda para WhatsApp
+        // 2. Otimizar Prompt + Gerar Legenda para WhatsApp (Com fallback inteligente caso Vertex API esteja desativada no projeto)
         if (action === "enhance-prompt") {
             const rawPrompt = (body.prompt || "").trim();
             const mediaType = body.mediaType === "video" ? "vídeo" : "imagem";
@@ -379,31 +400,44 @@ export async function POST(
                 return NextResponse.json({ status: false, message: "Digite uma ideia ou produto primeiro." }, { status: 400 });
             }
 
-            const sysInstruction = `Você é um diretor de fotografia especialista em retratos hiper-realistas, fotografia comercial de e-commerce (Mercado Livre, Shopee, Amazon) e vídeos virais para Status do WhatsApp e Reels (Google Flow / Veo / Nano Banana).
+            try {
+                const sysInstruction = `Você é um diretor de fotografia especialista em retratos hiper-realistas, fotografia comercial de e-commerce (Mercado Livre, Shopee, Amazon) e vídeos virais para Status do WhatsApp e Reels (Google Flow / Veo / FLUX.1).
 O usuário vai fornecer uma descrição curta para gerar um(a) ${mediaType}${stylePreset ? ` no estilo "${stylePreset}"` : ""}.
 Retorne APENAS um JSON válido (sem markdown) no formato:
 {
-  "enhancedPrompt": "Prompt fotográfico hiper-realista detalhado em português (especificando câmera DSLR 85mm, iluminação natural/estúdio, textura de pele e materiais realistas, 8k)",
-  "caption": "Legenda persuasiva pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)"
+  "enhancedPrompt": "Prompt fotográfico hiper-realista detalhado em inglês para máxima fidelidade no FLUX.1/Gemini (incluindo RAW photo, 85mm f/1.4 lens, natural golden hour lighting, photorealistic, ultra detailed skin and texture, 8k)",
+  "caption": "Legenda persuasiva em português pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)"
 }`;
 
-            const rawText = await generateTextWithGeminiFallback(ai, rawPrompt, {
-                systemInstruction: sysInstruction,
-                responseMimeType: "application/json",
-            });
+                const rawText = await generateTextWithGeminiFallback(apiKey, rawPrompt, {
+                    systemInstruction: sysInstruction,
+                    responseMimeType: "application/json",
+                });
 
-            let parsed: { enhancedPrompt?: string; caption?: string } = {};
-            try {
-                parsed = JSON.parse(rawText || "{}");
-            } catch {
-                parsed = { enhancedPrompt: rawText || rawPrompt, caption: "" };
+                const parsed = JSON.parse(rawText || "{}");
+                if (parsed.enhancedPrompt) {
+                    return NextResponse.json({
+                        status: true,
+                        data: {
+                            enhancedPrompt: parsed.enhancedPrompt,
+                            caption: parsed.caption || `✨ Confira essa novidade incrível! 🔥\n\n👉 Chame aqui ou clique no link para garantir!`,
+                        },
+                    });
+                }
+            } catch (err: any) {
+                logger.warn("AiStudio", `Enhance prompt via Gemini falhou (${err?.message?.slice(0, 100)}), usando otimizador fotográfico automático.`);
             }
+
+            // Fallback automático caso a API Vertex ainda não esteja ativada no projeto Google Cloud
+            const translatedEn = await translatePtToEnFree(rawPrompt);
+            const autoEnhanced = `RAW photo, ${translatedEn}, natural golden hour sunlight, 85mm f/1.4 DSLR lens, photorealistic, ultra detailed skin and surface texture, cinematic lighting, sharp focus, 8k`;
+            const autoCaption = `🔥 *Destaque Especial!* ✨\n\n${rawPrompt.charAt(0).toUpperCase() + rawPrompt.slice(1)} com condições imperdíveis!\n\n🛒 Confira agora mesmo e garanta o seu! 👇`;
 
             return NextResponse.json({
                 status: true,
                 data: {
-                    enhancedPrompt: parsed.enhancedPrompt || rawPrompt,
-                    caption: parsed.caption || "",
+                    enhancedPrompt: autoEnhanced,
+                    caption: autoCaption,
                 },
             });
         }
@@ -434,8 +468,6 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             let imageBuffer: Buffer | null = null;
             let usedModel = requestedModel;
 
-            // Método 1: Gemini Native Image (Nano Banana: gemini-2.5-flash-image / gemini-3.1-flash-image)
-            // Funciona tanto no Vertex AI Express Mode (AQ....) quanto no Gemini Developer API (AIza...)
             const tryGeminiNativeImage = async (modelName: string, includeModalities: boolean) => {
                 const contents: any[] = [];
                 if (referenceImageBase64) {
@@ -473,38 +505,39 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 throw new Error(`O modelo ${modelName} não retornou bytes de imagem.`);
             };
 
-            const geminiImageModels =
-                requestedModel && requestedModel !== "auto" && !requestedModel.startsWith("imagen-")
-                    ? [requestedModel, "gemini-2.5-flash-image", "gemini-3.1-flash-image"]
-                    : ["gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-nano-banana-2.1"];
+            if (requestedModel !== "flux-1-ultra-hd") {
+                const geminiImageModels =
+                    requestedModel && requestedModel !== "auto" && !requestedModel.startsWith("imagen-")
+                        ? [requestedModel]
+                        : ["gemini-2.5-flash-image"];
 
-            for (const mName of Array.from(new Set(geminiImageModels))) {
-                try {
-                    // Em Vertex AI Express Mode, gemini-2.5-flash-image funciona direto sem responseModalities ou com responseModalities
-                    imageBuffer = await tryGeminiNativeImage(mName, !isVertexKey);
-                    if (imageBuffer) break;
-                } catch (err1: any) {
+                for (const mName of geminiImageModels) {
                     try {
-                        imageBuffer = await tryGeminiNativeImage(mName, isVertexKey);
+                        imageBuffer = await tryGeminiNativeImage(mName, !isVertexKey);
                         if (imageBuffer) break;
-                    } catch (err2: any) {
-                        logger.warn("AiStudio", `Modelo Gemini Image ${mName} indisponível (${err2?.message?.slice(0, 100)}), tentando próximo...`);
+                    } catch {
+                        try {
+                            imageBuffer = await tryGeminiNativeImage(mName, isVertexKey);
+                            if (imageBuffer) break;
+                        } catch (err2: any) {
+                            logger.warn("AiStudio", `Modelo Gemini Image ${mName} indisponível (${err2?.message?.slice(0, 100)}), usando FLUX.1 Ultra-HD...`);
+                        }
                     }
                 }
             }
 
-            // Método 2: Motor Fotográfico Ultra HD Black Forest Labs FLUX.1 (guiado pelo Gemini 2.5 Flash)
+            // Motor Fotográfico Ultra HD Black Forest Labs FLUX.1
             if (!imageBuffer) {
-                logger.info("AiStudio", "Renderizando fotografia realista 8K com Gemini Director + Black Forest Labs FLUX.1...");
+                logger.info("AiStudio", "Renderizando fotografia realista 8K com Black Forest Labs FLUX.1...");
                 const englishPrompt = await buildEnglishVisualPromptWithGemini(
-                    ai,
+                    apiKey,
                     prompt,
                     stylePreset,
                     referenceImageBase64,
                     referenceImageMimeType
                 );
                 imageBuffer = await fetchBlackForestFluxUltraHd(englishPrompt, aspectRatio);
-                usedModel = "gemini-2.5 + flux-1-ultra-hd";
+                usedModel = "flux-1-ultra-hd";
             }
 
             const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -573,62 +606,48 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 };
             }
 
-            const videoModels = Array.from(
-                new Set([
-                    requestedModel,
-                    "veo-3.1-fast-generate-001",
-                    "veo-3.1-generate-001",
-                    "veo-2.0-generate-001",
-                ])
-            );
-
             let videoBuffer: Buffer | null = null;
-            let usedModel = videoModels[0];
+            let usedModel = requestedModel;
 
-            for (const m of videoModels) {
-                try {
-                    usedModel = m;
-                    let operation = await ai.models.generateVideos({
-                        model: m,
-                        prompt: fullPrompt,
-                        ...(imageInput ? { image: imageInput } : {}),
-                        config: {
-                            numberOfVideos: 1,
-                            aspectRatio,
-                        },
-                    });
+            try {
+                let operation = await ai.models.generateVideos({
+                    model: requestedModel,
+                    prompt: fullPrompt,
+                    ...(imageInput ? { image: imageInput } : {}),
+                    config: {
+                        numberOfVideos: 1,
+                        aspectRatio,
+                    },
+                });
 
-                    const maxAttempts = 42;
-                    let attempts = 0;
-                    while (!operation.done && attempts < maxAttempts) {
-                        await new Promise((resolve) => setTimeout(resolve, 5000));
-                        operation = await ai.operations.getVideosOperation({ operation });
-                        attempts++;
-                    }
+                const maxAttempts = 42;
+                let attempts = 0;
+                while (!operation.done && attempts < maxAttempts) {
+                    await new Promise((resolve) => setTimeout(resolve, 5000));
+                    operation = await ai.operations.getVideosOperation({ operation });
+                    attempts++;
+                }
 
-                    if (operation.done && !operation.error) {
-                        const videoObj = operation.response?.generatedVideos?.[0]?.video;
-                        const videoUri = videoObj?.uri;
-                        const inlineVideoBytes = (videoObj as any)?.videoBytes;
+                if (operation.done && !operation.error) {
+                    const videoObj = operation.response?.generatedVideos?.[0]?.video;
+                    const videoUri = videoObj?.uri;
+                    const inlineVideoBytes = (videoObj as any)?.videoBytes;
 
-                        if (inlineVideoBytes) {
-                            videoBuffer = Buffer.from(inlineVideoBytes, "base64");
-                            break;
-                        } else if (videoUri) {
-                            const separator = videoUri.includes("?") ? "&" : "?";
-                            const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
-                            const videoRes = await fetch(downloadUrl, {
-                                headers: { "x-goog-api-key": apiKey },
-                            });
-                            if (videoRes.ok) {
-                                videoBuffer = Buffer.from(await videoRes.arrayBuffer());
-                                break;
-                            }
+                    if (inlineVideoBytes) {
+                        videoBuffer = Buffer.from(inlineVideoBytes, "base64");
+                    } else if (videoUri) {
+                        const separator = videoUri.includes("?") ? "&" : "?";
+                        const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
+                        const videoRes = await fetch(downloadUrl, {
+                            headers: { "x-goog-api-key": apiKey },
+                        });
+                        if (videoRes.ok) {
+                            videoBuffer = Buffer.from(await videoRes.arrayBuffer());
                         }
                     }
-                } catch (err: any) {
-                    logger.warn("AiStudio", `Modelo de vídeo ${m} indisponível (${err?.message?.slice(0, 100)}), tentando próximo...`);
                 }
+            } catch (err: any) {
+                logger.warn("AiStudio", `Modelo de vídeo ${requestedModel} indisponível (${err?.message?.slice(0, 100)}), usando FLUX.1 8K + Motion Render FFmpeg...`);
             }
 
             // Motor Híbrido de Vídeo HD (Fotografia 8K FLUX.1 + Câmera Cinematográfica MP4 com FFmpeg)
@@ -642,7 +661,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     baseFrameBuffer = Buffer.from(imageInput.imageBytes, "base64");
                 } else {
                     const englishPrompt = await buildEnglishVisualPromptWithGemini(
-                        ai,
+                        apiKey,
                         prompt,
                         stylePreset,
                         referenceImageBase64,
