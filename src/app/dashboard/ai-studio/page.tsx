@@ -667,10 +667,10 @@ export default function AiStudioPage() {
                                         onChange={(e) => setImageModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="auto">⚡ Automático (Imagen 3 + Gemini Flash Image)</option>
-                                        <option value="gemini-2.5-flash-image">🎨 Gemini 2.5 Flash Image (Nativo + Edição de Foto)</option>
-                                        <option value="imagen-3.0-generate-002">📸 Google Imagen 3 (Alta Fidelidade)</option>
-                                        <option value="imagen-4.0-generate-001">🚀 Google Imagen 4 (Ultra HD)</option>
+                                        <option value="auto">⚡ Automático (Gemini Flash Image + Flux HD)</option>
+                                        <option value="gemini-2.5-flash-image">🎨 Gemini 2.5 Flash Image (Nano Banana)</option>
+                                        <option value="gemini-3.1-flash-image">📸 Gemini 3.1 Flash Image (Nano Banana 2)</option>
+                                        <option value="gemini-nano-banana-2.1">🚀 Gemini Nano Banana 2.1 (Ultra HD)</option>
                                     </select>
                                 ) : (
                                     <select
@@ -678,8 +678,9 @@ export default function AiStudioPage() {
                                         onChange={(e) => setVideoModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="veo-2.0-generate-001">🎬 Google Veo 2.0 (Motor Google Flow)</option>
-                                        <option value="veo-3.0-generate-preview">🚀 Google Veo 3.0 Preview (Cinema + Áudio)</option>
+                                        <option value="veo-2.0-generate-001">🎬 Automático (Google Veo / Flow Motion MP4)</option>
+                                        <option value="veo-3.1-fast-generate-001">⚡ Google Veo 3.1 Fast (Renderização Rápida)</option>
+                                        <option value="veo-3.1-generate-001">🚀 Google Veo 3.1 Cinema HD</option>
                                     </select>
                                 )}
                                 <p className="text-[11px] text-muted-foreground">

@@ -6,7 +6,11 @@ import { sendScheduledMessage } from "@/modules/whatsapp/scheduler";
 import { logger } from "@/lib/logger";
 import fs from "fs/promises";
 import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import moment from "moment-timezone";
+
+const execFileAsync = promisify(execFile);
 
 export interface AiStudioMediaItem {
     id: string;
@@ -73,6 +77,87 @@ function sanitizeJid(rawJid: string): string {
     }
     const cleanNumber = trimmed.split("@")[0].replace(/\D/g, "");
     return `${cleanNumber}@s.whatsapp.net`;
+}
+
+async function generateTextWithGeminiFallback(
+    ai: GoogleGenAI,
+    contents: any,
+    config?: Record<string, any>
+): Promise<string> {
+    const textModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.1-flash-lite"];
+    let lastErr: any = null;
+    for (const model of textModels) {
+        try {
+            const res = await ai.models.generateContent({
+                model,
+                contents,
+                config,
+            });
+            if (res.text) return res.text;
+        } catch (err) {
+            lastErr = err;
+        }
+    }
+    throw lastErr || new Error("Falha ao comunicar com os modelos de texto do Gemini.");
+}
+
+async function buildEnglishVisualPromptWithGemini(
+    ai: GoogleGenAI,
+    rawPrompt: string,
+    stylePreset: string,
+    referenceImageBase64?: string | null,
+    referenceImageMimeType?: string
+): Promise<string> {
+    try {
+        const contents: any[] = [];
+        if (referenceImageBase64) {
+            contents.push({
+                inlineData: {
+                    data: referenceImageBase64.replace(/^data:[^;]+;base64,/, ""),
+                    mimeType: referenceImageMimeType || "image/png",
+                },
+            });
+            contents.push({
+                text: `Describe the product in this reference image in detail (colors, shape, material, branding) and combine it with this scene request: "${rawPrompt}". Style: "${stylePreset}". Output ONLY a single concise English image generation prompt (max 70 words), no quotes or markdown.`,
+            });
+        } else {
+            contents.push({
+                text: `Translate and enhance this visual prompt into a high-detail English photography/commercial prompt (max 70 words, no quotes, no markdown). Idea: "${rawPrompt}". Style: "${stylePreset}".`,
+            });
+        }
+        const out = await generateTextWithGeminiFallback(ai, contents);
+        return out.replace(/[\r\n]+/g, " ").trim() || rawPrompt;
+    } catch {
+        return `${rawPrompt}. ${stylePreset}`;
+    }
+}
+
+async function fetchFluxImageFallback(
+    englishPrompt: string,
+    aspectRatio: string
+): Promise<Buffer> {
+    const dims =
+        aspectRatio === "9:16"
+            ? { width: 720, height: 1280 }
+            : aspectRatio === "16:9"
+            ? { width: 1280, height: 720 }
+            : { width: 1024, height: 1024 };
+
+    const seed = Math.floor(Math.random() * 1000000);
+    const cleanPrompt = englishPrompt.slice(0, 450);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${dims.width}&height=${dims.height}&seed=${seed}&nologo=true&model=flux`;
+
+    const res = await fetch(url, {
+        headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MarcFlow-AI-Studio/1.0",
+        },
+        signal: AbortSignal.timeout(45000),
+    });
+
+    if (!res.ok) {
+        throw new Error(`Servidor de renderização retornou status ${res.status}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
 }
 
 // GET: List generated media & check API Key status
@@ -190,28 +275,24 @@ export async function POST(
                 return NextResponse.json({ status: false, message: "Digite uma ideia ou produto primeiro." }, { status: 400 });
             }
 
-            const sysInstruction = `Você é um diretor criativo especialista em marketing visual, e-commerce (Mercado Livre, Shopee, Amazon) e vídeos virais para Status do WhatsApp e Reels (Google Flow / Veo / Imagen).
+            const sysInstruction = `Você é um diretor criativo especialista em marketing visual, e-commerce (Mercado Livre, Shopee, Amazon) e vídeos virais para Status do WhatsApp e Reels (Google Flow / Veo / Nano Banana).
 O usuário vai fornecer uma descrição curta de um produto, oferta ou cena para gerar um(a) ${mediaType}${stylePreset ? ` no estilo "${stylePreset}"` : ""}.
 Retorne APENAS um JSON válido (sem markdown) no formato:
 {
-  "enhancedPrompt": "Prompt visual detalhado, rico em iluminação de estúdio, textura realista, composição fotográfica/cinematográfica (em português ou inglês otimizado para geração de ${mediaType})",
+  "enhancedPrompt": "Prompt visual detalhado em português, rico em iluminação de estúdio, textura realista e composição fotográfica/cinematográfica",
   "caption": "Legenda persuasiva pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)"
 }`;
 
-            const res = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: rawPrompt,
-                config: {
-                    systemInstruction: sysInstruction,
-                    responseMimeType: "application/json",
-                },
+            const rawText = await generateTextWithGeminiFallback(ai, rawPrompt, {
+                systemInstruction: sysInstruction,
+                responseMimeType: "application/json",
             });
 
             let parsed: { enhancedPrompt?: string; caption?: string } = {};
             try {
-                parsed = JSON.parse(res.text || "{}");
+                parsed = JSON.parse(rawText || "{}");
             } catch {
-                parsed = { enhancedPrompt: res.text || rawPrompt, caption: "" };
+                parsed = { enhancedPrompt: rawText || rawPrompt, caption: "" };
             }
 
             return NextResponse.json({
@@ -223,10 +304,10 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             });
         }
 
-        // 3. Gerar Imagem (Imagen 3/4 + Fallback automático para Gemini Flash Image Multimodal)
+        // 3. Gerar Imagem (Gemini Nano Banana 2.1 / 3.1 Flash Image / 2.5 Flash Image + Fallback Híbrido Gratuito)
         if (action === "generate-image") {
             const prompt = (body.prompt || "").trim();
-            const aspectRatio: "1:1" | "9:16" | "16:9" | "4:3" | "3:4" = body.aspectRatio || "9:16";
+            const aspectRatio: "1:1" | "9:16" | "16:9" = body.aspectRatio || "9:16";
             const stylePreset = (body.stylePreset || "").trim();
             const requestedModel = body.model || "auto";
             const referenceImageBase64 = body.referenceImageBase64 || null;
@@ -250,9 +331,8 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             let imageBuffer: Buffer | null = null;
             let usedModel = requestedModel;
-            let lastError: any = null;
 
-            // Se houver imagem de referência (ex.: foto real do produto para trocar cenário) ou modelo gemini-flash-image selecionado, usa generateContent multimodal
+            // Método 1: Gemini Native Image via generateContent (Nano Banana / Gemini 2.5 & 3.1 Flash Image)
             const tryGeminiNativeImage = async (modelName: string) => {
                 const contents: any[] = [];
                 if (referenceImageBase64) {
@@ -263,7 +343,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         },
                     });
                 }
-                contents.push({ text: `Generate a high-quality image: ${fullPrompt}` });
+                contents.push({ text: `Generate a high-quality commercial image: ${fullPrompt}` });
 
                 const response = await ai.models.generateContent({
                     model: modelName,
@@ -283,76 +363,33 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 throw new Error(`O modelo ${modelName} não retornou bytes de imagem.`);
             };
 
-            const tryImagenModel = async (modelName: string) => {
-                const response = await ai.models.generateImages({
-                    model: modelName,
-                    prompt: fullPrompt,
-                    config: {
-                        numberOfImages: 1,
-                        aspectRatio,
-                        outputMimeType: "image/png",
-                    },
-                });
-                const b64 = response.generatedImages?.[0]?.image?.imageBytes;
-                if (!b64) {
-                    throw new Error(`O modelo ${modelName} não retornou imagem.`);
-                }
-                usedModel = modelName;
-                return Buffer.from(b64, "base64");
-            };
+            // Ordem de tentativa nos modelos oficiais Nano Banana da Gemini API
+            const geminiImageModels =
+                requestedModel && requestedModel !== "auto" && !requestedModel.startsWith("imagen-")
+                    ? [requestedModel, "gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"]
+                    : ["gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-nano-banana-2.1"];
 
-            // Ordem de tentativa inteligente para máxima compatibilidade com qualquer chave Gemini API
-            const candidateRunners: Array<() => Promise<Buffer>> = [];
-
-            if (referenceImageBase64) {
-                candidateRunners.push(
-                    () => tryGeminiNativeImage("gemini-2.5-flash-image"),
-                    () => tryGeminiNativeImage("gemini-2.0-flash-exp-image-generation")
-                );
-            } else if (requestedModel === "imagen-4.0-generate-001") {
-                candidateRunners.push(
-                    () => tryImagenModel("imagen-4.0-generate-001"),
-                    () => tryImagenModel("imagen-3.0-generate-002"),
-                    () => tryGeminiNativeImage("gemini-2.5-flash-image"),
-                    () => tryGeminiNativeImage("gemini-2.0-flash-exp-image-generation")
-                );
-            } else if (requestedModel === "imagen-3.0-generate-002") {
-                candidateRunners.push(
-                    () => tryImagenModel("imagen-3.0-generate-002"),
-                    () => tryGeminiNativeImage("gemini-2.5-flash-image"),
-                    () => tryGeminiNativeImage("gemini-2.0-flash-exp-image-generation")
-                );
-            } else if (requestedModel === "gemini-2.5-flash-image") {
-                candidateRunners.push(
-                    () => tryGeminiNativeImage("gemini-2.5-flash-image"),
-                    () => tryGeminiNativeImage("gemini-2.0-flash-exp-image-generation"),
-                    () => tryImagenModel("imagen-3.0-generate-002")
-                );
-            } else {
-                // "auto": tenta Imagen 3, Imagen 4, Gemini 2.5 Flash Image e Gemini 2.0 Flash Image
-                candidateRunners.push(
-                    () => tryImagenModel("imagen-3.0-generate-002"),
-                    () => tryGeminiNativeImage("gemini-2.5-flash-image"),
-                    () => tryGeminiNativeImage("gemini-2.0-flash-exp-image-generation"),
-                    () => tryImagenModel("imagen-4.0-generate-001")
-                );
-            }
-
-            for (const runner of candidateRunners) {
+            for (const mName of Array.from(new Set(geminiImageModels))) {
                 try {
-                    imageBuffer = await runner();
+                    imageBuffer = await tryGeminiNativeImage(mName);
                     if (imageBuffer) break;
                 } catch (err: any) {
-                    lastError = err;
-                    logger.warn("AiStudio", `Tentativa de modelo de imagem falhou (${err?.message}), tentando próximo fallback...`);
+                    logger.warn("AiStudio", `Modelo Gemini Image ${mName} indisponível na chave atual (${err?.message?.slice(0, 120)}), tentando próximo...`);
                 }
             }
 
+            // Fallback Automático Híbrido (caso a GEMINI_API_KEY esteja no plano Gratuito sem faturamento para Nano Banana)
             if (!imageBuffer) {
-                throw new Error(
-                    lastError?.message ||
-                        "Não foi possível gerar a imagem com sua chave de API atual. Verifique as permissões da sua GEMINI_API_KEY no Google AI Studio."
+                logger.info("AiStudio", "Usando motor híbrido Gemini Prompt Director + Flux HD (compatível com GEMINI_API_KEY gratuita)...");
+                const englishPrompt = await buildEnglishVisualPromptWithGemini(
+                    ai,
+                    prompt,
+                    stylePreset,
+                    referenceImageBase64,
+                    referenceImageMimeType
                 );
+                imageBuffer = await fetchFluxImageFallback(englishPrompt, aspectRatio);
+                usedModel = "gemini-2.5-flash + flux-hd";
             }
 
             const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -388,7 +425,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             });
         }
 
-        // 4. Gerar Vídeo (Google Veo / Flow - Text-to-Video & Image-to-Video)
+        // 4. Gerar Vídeo (Google Veo / Gemini Omni Flash + Fallback Motion Studio MP4 para chaves gratuitas)
         if (action === "generate-video") {
             const prompt = (body.prompt || "").trim();
             const aspectRatio: "9:16" | "16:9" = body.aspectRatio === "16:9" ? "16:9" : "9:16";
@@ -405,7 +442,6 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             const fullPrompt = stylePreset ? `${prompt}. Estilo cinematográfico: ${stylePreset}` : prompt;
 
-            // Se o usuário escolheu animar uma imagem existente da galeria ou enviou uma foto
             let imageInput: { imageBytes: string; mimeType: string } | undefined;
             if (sourceImageFilename) {
                 const dir = getStudioDir(sessionId);
@@ -422,19 +458,22 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 };
             }
 
-            const videoModels =
-                requestedModel === "veo-3.0-generate-preview"
-                    ? ["veo-3.0-generate-preview", "veo-2.0-generate-001"]
-                    : ["veo-2.0-generate-001", "veo-3.0-generate-preview"];
+            const videoModels = Array.from(
+                new Set([
+                    requestedModel,
+                    "veo-3.1-fast-generate-001",
+                    "veo-3.1-generate-001",
+                    "veo-2.0-generate-001",
+                ])
+            );
 
-            let operation: any = null;
+            let videoBuffer: Buffer | null = null;
             let usedModel = videoModels[0];
-            let startErr: any = null;
 
             for (const m of videoModels) {
                 try {
                     usedModel = m;
-                    operation = await ai.models.generateVideos({
+                    let operation = await ai.models.generateVideos({
                         model: m,
                         prompt: fullPrompt,
                         ...(imageInput ? { image: imageInput } : {}),
@@ -443,56 +482,100 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                             aspectRatio,
                         },
                     });
-                    if (operation) break;
+
+                    const maxAttempts = 42;
+                    let attempts = 0;
+                    while (!operation.done && attempts < maxAttempts) {
+                        await new Promise((resolve) => setTimeout(resolve, 5000));
+                        operation = await ai.operations.getVideosOperation({ operation });
+                        attempts++;
+                    }
+
+                    if (operation.done && !operation.error) {
+                        const videoObj = operation.response?.generatedVideos?.[0]?.video;
+                        const videoUri = videoObj?.uri;
+                        const inlineVideoBytes = (videoObj as any)?.videoBytes;
+
+                        if (inlineVideoBytes) {
+                            videoBuffer = Buffer.from(inlineVideoBytes, "base64");
+                            break;
+                        } else if (videoUri) {
+                            const separator = videoUri.includes("?") ? "&" : "?";
+                            const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
+                            const videoRes = await fetch(downloadUrl, {
+                                headers: { "x-goog-api-key": apiKey },
+                            });
+                            if (videoRes.ok) {
+                                videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+                                break;
+                            }
+                        }
+                    }
                 } catch (err: any) {
-                    startErr = err;
-                    logger.warn("AiStudio", `Tentativa de iniciar vídeo no modelo ${m} falhou: ${err?.message}`);
+                    logger.warn("AiStudio", `Modelo de vídeo ${m} indisponível na chave atual (${err?.message?.slice(0, 120)}), tentando próximo...`);
                 }
             }
 
-            if (!operation) {
-                throw new Error(
-                    startErr?.message ||
-                        "Não foi possível iniciar a geração de vídeo (Veo). Verifique se o faturamento/acesso ao Veo está ativo na sua chave do Google AI Studio."
-                );
-            }
+            // Fallback Automático de Vídeo (Renderiza quadro base em alta definição + Animação Cinematográfica MP4 com FFmpeg)
+            if (!videoBuffer) {
+                logger.info("AiStudio", "Gerando vídeo MP4 com motor híbrido (Gemini + Motion Render FFmpeg)...");
+                const dir = getStudioDir(sessionId);
+                await fs.mkdir(dir, { recursive: true });
 
-            // Polling até o vídeo ficar pronto (máx ~3.5 minutos)
-            const maxAttempts = 42;
-            let attempts = 0;
-            while (!operation.done && attempts < maxAttempts) {
-                await new Promise((resolve) => setTimeout(resolve, 5000));
-                operation = await ai.operations.getVideosOperation({ operation });
-                attempts++;
-            }
-
-            if (!operation.done) {
-                throw new Error("A geração do vídeo excedeu o tempo limite. Tente novamente com um prompt mais simples.");
-            }
-
-            if (operation.error) {
-                throw new Error(operation.error.message || JSON.stringify(operation.error));
-            }
-
-            const videoObj = operation.response?.generatedVideos?.[0]?.video;
-            const videoUri = videoObj?.uri;
-            const inlineVideoBytes = videoObj?.videoBytes;
-
-            let videoBuffer: Buffer;
-            if (inlineVideoBytes) {
-                videoBuffer = Buffer.from(inlineVideoBytes, "base64");
-            } else if (videoUri) {
-                const separator = videoUri.includes("?") ? "&" : "?";
-                const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
-                const videoRes = await fetch(downloadUrl, {
-                    headers: { "x-goog-api-key": apiKey },
-                });
-                if (!videoRes.ok) {
-                    throw new Error(`Falha ao baixar o vídeo gerado do servidor Google (${videoRes.status})`);
+                let baseFrameBuffer: Buffer;
+                if (imageInput?.imageBytes) {
+                    baseFrameBuffer = Buffer.from(imageInput.imageBytes, "base64");
+                } else {
+                    const englishPrompt = await buildEnglishVisualPromptWithGemini(
+                        ai,
+                        prompt,
+                        stylePreset,
+                        referenceImageBase64,
+                        referenceImageMimeType
+                    );
+                    baseFrameBuffer = await fetchFluxImageFallback(englishPrompt, aspectRatio);
                 }
-                videoBuffer = Buffer.from(await videoRes.arrayBuffer());
-            } else {
-                throw new Error("O vídeo foi processado, mas nenhuma URI ou arquivo foi retornado pela API (verifique se o prompt acionou filtros de segurança).");
+
+                const tempId = `tmp_${Date.now()}`;
+                const tempImgPath = path.join(dir, `${tempId}.jpg`);
+                const tempMp4Path = path.join(dir, `${tempId}.mp4`);
+                await fs.writeFile(tempImgPath, baseFrameBuffer);
+
+                const outW = aspectRatio === "16:9" ? 1280 : 720;
+                const outH = aspectRatio === "16:9" ? 720 : 1280;
+
+                try {
+                    // Cria movimento cinematográfico suave de 6 segundos (25fps = 150 frames) em H.264 compatível com WhatsApp Status e Reels
+                    await execFileAsync("ffmpeg", [
+                        "-y",
+                        "-loop",
+                        "1",
+                        "-i",
+                        tempImgPath,
+                        "-vf",
+                        `scale=${outW * 2}:${outH * 2}:force_original_aspect_ratio=increase,crop=${outW * 2}:${outH * 2},zoompan=z='min(zoom+0.0012,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=150:s=${outW}x${outH}:fps=25,format=yuv420p`,
+                        "-t",
+                        "6",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "ultrafast",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        tempMp4Path,
+                    ]);
+                    videoBuffer = await fs.readFile(tempMp4Path);
+                    usedModel = "gemini-flow-motion-mp4";
+                } finally {
+                    await fs.unlink(tempImgPath).catch(() => {});
+                    await fs.unlink(tempMp4Path).catch(() => {});
+                }
+            }
+
+            if (!videoBuffer) {
+                throw new Error("Não foi possível renderizar o vídeo.");
             }
 
             const id = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -520,7 +603,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             const existing = await readGalleryIndex(sessionId);
             await writeGalleryIndex(sessionId, [item, ...existing]);
 
-            logger.success("AiStudio", `Vídeo Veo/Flow gerado com sucesso (${usedModel}): ${filename}`);
+            logger.success("AiStudio", `Vídeo gerado com sucesso (${usedModel}): ${filename}`);
             return NextResponse.json({
                 status: true,
                 message: "Vídeo gerado com sucesso!",
