@@ -302,6 +302,94 @@ async function synthesizePortugueseVoiceover(
     return true;
 }
 
+
+async function generateWav2LipVideo(
+    imageBuffer: Buffer,
+    audioPath: string,
+    outputMp4Path: string
+): Promise<boolean> {
+    const tmpImg = path.join(os.tmpdir(), `marcflow_lip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`);
+    await fs.writeFile(tmpImg, imageBuffer);
+
+    const pool = [
+        "https://fabiolamp-wav2lip-fab-gpu.hf.space",
+        "https://guardiancc-gradio-lipsync-wav2lip.hf.space",
+        "https://smartdigitalnetworks-gradio-lipsync-wav2lip.hf.space"
+    ];
+
+    try {
+        for (const host of pool) {
+            try {
+                logger.info("AiStudio", `Enviando imagem e locução para sincronia labial (Wav2Lip) em ${host}...`);
+
+                const { stdout: upImgRaw } = await execFileAsync("curl", ["-4", "-sS", "--max-time", "30", "-F", `files=@${tmpImg}`, `${host}/upload`], { encoding: "utf8" });
+                const { stdout: upAudioRaw } = await execFileAsync("curl", ["-4", "-sS", "--max-time", "30", "-F", `files=@${audioPath}`, `${host}/upload`], { encoding: "utf8" });
+
+                const upImg = JSON.parse(upImgRaw || "[]");
+                const upAudio = JSON.parse(upAudioRaw || "[]");
+                if (!upImg[0] || !upAudio[0]) continue;
+
+                const payload = {
+                    data: [
+                        { path: upImg[0] },
+                        { path: upAudio[0] },
+                        null
+                    ]
+                };
+                const tmpPayload = path.join(os.tmpdir(), `marcflow_call_${Date.now()}.json`);
+                await fs.writeFile(tmpPayload, JSON.stringify(payload), "utf8");
+
+                let callRaw = "";
+                try {
+                    const { stdout: cOut } = await execFileAsync("curl", [
+                        "-4", "-sS", "--max-time", "25", "-X", "POST",
+                        `${host}/call/run_infrence`,
+                        "-H", "Content-Type: application/json",
+                        "-d", `@${tmpPayload}`
+                    ], { encoding: "utf8" });
+                    callRaw = cOut;
+                } finally {
+                    await fs.unlink(tmpPayload).catch(() => {});
+                }
+
+                const callRes = JSON.parse(callRaw || "{}");
+                const eventId = callRes.event_id;
+                if (!eventId) continue;
+
+                logger.info("AiStudio", `Processando animação dos lábios (Wav2Lip event: ${eventId})...`);
+                const { stdout: sseOut } = await execFileAsync("curl", [
+                    "-4", "-sS", "--max-time", "180", `${host}/call/run_infrence/${eventId}`
+                ], { encoding: "utf8" });
+
+                const match = sseOut.match(/"url":s*"([^"]+)"/) || sseOut.match(/"path":s*"([^"]+.mp4)"/);
+                if (match) {
+                    let fileUrl = match[1];
+                    if (fileUrl.includes("/call/r/file=")) {
+                        fileUrl = fileUrl.replace("/call/r/file=", "/file=");
+                    } else if (fileUrl.startsWith("/")) {
+                        fileUrl = `${host}/file=${fileUrl}`;
+                    }
+
+                    const { stdout: dlBuf } = await execFileAsync("curl", [
+                        "-4", "-sS", "--max-time", "45", fileUrl
+                    ], { encoding: "buffer", maxBuffer: 50 * 1024 * 1024 });
+
+                    if (dlBuf && dlBuf.length > 5000) {
+                        await fs.writeFile(outputMp4Path, dlBuf);
+                        logger.info("AiStudio", `Vídeo LipSync animado gerado com sucesso (${dlBuf.length} bytes)!`);
+                        return true;
+                    }
+                }
+            } catch (hostErr: any) {
+                logger.warn("AiStudio", `Tentativa Wav2Lip em ${host} falhou (${hostErr?.message?.slice(0, 80)}), tentando próximo...`);
+            }
+        }
+    } finally {
+        await fs.unlink(tmpImg).catch(() => {});
+    }
+    return false;
+}
+
 async function fetchBlackForestFluxUltraHd(
     englishPrompt: string,
     aspectRatio: string,
@@ -927,6 +1015,32 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             }
 
             // Motor Multi-Cena Dinâmico HD (2 Poses/Ângulos Coerentes + Transição Cinematográfica + Fala Neural PT-BR + Trilha Sonora)
+            
+            // Modo 1: Sincronia Labial (Avatar Falante / Lip-Sync)
+            const videoStyle = (body.videoStyle || "lipsync").toLowerCase();
+            if (videoStyle === "lipsync" && hasSpeechAudio) {
+                logger.info("AiStudio", "Gerando vídeo com SINCRONIA LABIAL (Lip-Sync / Wav2Lip)...");
+
+                let baseFrameBuffer: Buffer;
+                if (imageInput?.imageBytes) {
+                    baseFrameBuffer = Buffer.from(imageInput.imageBytes, "base64");
+                } else {
+                    const portraitPrompt = `Photorealistic front-facing portrait of a person speaking, natural facial expression, crisp details, 8k: ${prompt}`;
+                    baseFrameBuffer = await fetchBlackForestFluxUltraHd(portraitPrompt, aspectRatio);
+                }
+
+                const lipsyncOutMp4 = path.join(dir, `${tempId}_lipsync.mp4`);
+                const lipsyncSuccess = await generateWav2LipVideo(baseFrameBuffer, tempSpeechPath, lipsyncOutMp4);
+
+                if (lipsyncSuccess) {
+                    videoBuffer = await fs.readFile(lipsyncOutMp4);
+                    usedModel = "wav2lip-lipsync";
+                    await fs.unlink(lipsyncOutMp4).catch(() => {});
+                } else {
+                    logger.warn("AiStudio", "Falha na sincronia labial remota, usando motor cinematográfico...");
+                }
+            }
+
             if (!videoBuffer) {
                 logger.info("AiStudio", "Gerando vídeo MP4 HD com movimento multi-cena, fala neural PT-BR e trilha de áudio...");
 

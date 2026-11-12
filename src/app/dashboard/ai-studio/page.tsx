@@ -127,6 +127,7 @@ export default function AiStudioPage() {
     const [aspectRatio, setAspectRatio] = useState<"9:16" | "1:1" | "16:9">("9:16");
     const [imageModel, setImageModel] = useState("flux-1-ultra-hd");
     const [videoModel, setVideoModel] = useState("veo-2.0-generate-001");
+    const [videoStyle, setVideoStyle] = useState<"lipsync" | "cinematic">("lipsync");
 
     // Reference image (upload or gallery selection for Image-to-Video / Product Scene)
     const [referenceImageBase64, setReferenceImageBase64] = useState<string | null>(null);
@@ -698,6 +699,50 @@ export default function AiStudioPage() {
                             </div>
 
                             <div className="space-y-2">
+                                
+                                {mode === "video" && (
+                                    <div className="space-y-1.5 p-3 rounded-xl border border-indigo-500/20 bg-indigo-500/5">
+                                        <Label className="text-xs font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                                            🎬 Estilo de Animação do Vídeo
+                                        </Label>
+                                        <div className="grid grid-cols-2 gap-2 pt-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setVideoStyle("lipsync")}
+                                                className={`p-2.5 rounded-lg border text-left transition-all ${
+                                                    videoStyle === "lipsync"
+                                                        ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
+                                                        : "border-slate-200 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-slate-300"
+                                                }`}
+                                            >
+                                                <div className="font-semibold text-xs flex items-center gap-1.5">
+                                                    <span>🗣️ Sincronia Labial (Lip-Sync)</span>
+                                                </div>
+                                                <p className={`text-[10px] mt-0.5 leading-tight ${videoStyle === "lipsync" ? "text-indigo-100" : "text-muted-foreground"}`}>
+                                                    Anima lábios, rosto e boca sincronizados à fala
+                                                </p>
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => setVideoStyle("cinematic")}
+                                                className={`p-2.5 rounded-lg border text-left transition-all ${
+                                                    videoStyle === "cinematic"
+                                                        ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
+                                                        : "border-slate-200 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-slate-300"
+                                                }`}
+                                            >
+                                                <div className="font-semibold text-xs flex items-center gap-1.5">
+                                                    <span>🎥 Cinematográfico Dinâmico</span>
+                                                </div>
+                                                <p className={`text-[10px] mt-0.5 leading-tight ${videoStyle === "cinematic" ? "text-indigo-100" : "text-muted-foreground"}`}>
+                                                    Movimento de câmera, múltiplos ângulos e trilha
+                                                </p>
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <Label className="text-xs font-semibold uppercase tracking-wider text-slate-600">
                                     4. Motor de Inteligência Artificial
                                 </Label>
