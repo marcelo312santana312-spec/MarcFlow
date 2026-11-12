@@ -126,7 +126,7 @@ async function generateTextWithGeminiFallback(
     config?: Record<string, any>
 ): Promise<string> {
     const { primary, secondary } = createGenAIClients(apiKey);
-    const textModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"];
+    const textModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash", "gemini-3.8-flash"];
     let lastErr: any = null;
 
     for (const client of [primary, secondary]) {
