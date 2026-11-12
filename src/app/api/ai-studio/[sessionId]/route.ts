@@ -1121,7 +1121,6 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             const id = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
             const filename = `${id}.mp4`;
-            const dir = getStudioDir(sessionId);
             await fs.mkdir(dir, { recursive: true });
             const filePath = path.join(dir, filename);
             await fs.writeFile(filePath, videoBuffer);
