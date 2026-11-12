@@ -5,6 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import { sendScheduledMessage } from "@/modules/whatsapp/scheduler";
 import { logger } from "@/lib/logger";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -177,6 +178,130 @@ async function buildEnglishVisualPromptWithGemini(
     return `${photoPrefix} ${translatedIdea}. ${translatedStyle}`.trim();
 }
 
+async function curlPostJson(url: string, bodyObj: any, maxTimeSec = 45): Promise<string> {
+    const tmpFile = path.join(
+        os.tmpdir(),
+        `marcflow_curl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`
+    );
+    await fs.writeFile(tmpFile, JSON.stringify(bodyObj), "utf8");
+    try {
+        const { stdout } = await execFileAsync(
+            "curl",
+            [
+                "-4",
+                "-fsSL",
+                "--max-time",
+                String(maxTimeSec),
+                "-X",
+                "POST",
+                url,
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                `@${tmpFile}`,
+            ],
+            { encoding: "utf8", maxBuffer: 35 * 1024 * 1024 }
+        );
+        return stdout;
+    } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+    }
+}
+
+async function synthesizePortugueseVoiceover(
+    rawScript: string,
+    voiceId: string,
+    outputMp3Path: string
+): Promise<boolean> {
+    const cleanScript = rawScript
+        .replace(/https?:\/\/\S+/g, "")
+        .replace(/[*_~`#]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!cleanScript || voiceId === "none") return false;
+
+    const sentences = cleanScript
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    const chunks: string[] = [];
+    let current = "";
+    for (const s of sentences) {
+        if ((current + " " + s).trim().length <= 180) {
+            current = (current + " " + s).trim();
+        } else {
+            if (current) chunks.push(current);
+            if (s.length <= 180) {
+                current = s;
+            } else {
+                const words = s.split(" ");
+                let sub = "";
+                for (const w of words) {
+                    if ((sub + " " + w).trim().length <= 180) {
+                        sub = (sub + " " + w).trim();
+                    } else {
+                        if (sub) chunks.push(sub);
+                        sub = w;
+                    }
+                }
+                current = sub;
+            }
+        }
+    }
+    if (current) chunks.push(current);
+    if (chunks.length === 0) chunks.push(cleanScript.slice(0, 180));
+
+    const audioBuffers: Buffer[] = [];
+    const selectedVoice = ["br_001", "br_003", "br_005"].includes(voiceId) ? voiceId : "br_001";
+
+    for (const chunk of chunks) {
+        let chunkBuf: Buffer | null = null;
+
+        // 1. Voz Neural Brasileira (TikTok Neural TTS: br_001 Feminina, br_003 Jovem, br_005 Masculina)
+        try {
+            const ttOut = await curlPostJson(
+                "https://tiktok-tts.weilnet.workers.dev/api/generation",
+                { text: chunk, voice: selectedVoice },
+                12
+            );
+            const parsed = JSON.parse(ttOut || "{}");
+            if (parsed.data) {
+                const buf = Buffer.from(parsed.data, "base64");
+                if (buf.length > 500) chunkBuf = buf;
+            }
+        } catch (err: any) {
+            logger.warn("AiStudio", `TikTok Neural TTS falhou no trecho (${err?.message?.slice(0, 80)}), usando Google TTS PT-BR...`);
+        }
+
+        // 2. Fallback Google Translate TTS (pt-BR)
+        if (!chunkBuf) {
+            try {
+                const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=pt-BR&q=${encodeURIComponent(chunk)}`;
+                const { stdout } = await execFileAsync(
+                    "curl",
+                    ["-4", "-fsSL", "--max-time", "12", "-A", "Mozilla/5.0", gUrl],
+                    { encoding: "buffer", maxBuffer: 10 * 1024 * 1024 }
+                );
+                if (stdout && stdout.length > 500) {
+                    chunkBuf = stdout;
+                }
+            } catch (err2: any) {
+                logger.warn("AiStudio", `Google TTS PT-BR falhou (${err2?.message?.slice(0, 80)})`);
+            }
+        }
+
+        if (chunkBuf) {
+            audioBuffers.push(chunkBuf);
+        }
+    }
+
+    if (audioBuffers.length === 0) return false;
+    await fs.writeFile(outputMp3Path, Buffer.concat(audioBuffers));
+    return true;
+}
+
 async function fetchBlackForestFluxUltraHd(
     englishPrompt: string,
     aspectRatio: string,
@@ -195,28 +320,14 @@ async function fetchBlackForestFluxUltraHd(
 
     // 1. Provedor Dedicado 1: OpenRouter Gemini 3.1 Flash Image + FLUX-3 Klein Autenticado (Sem limite ZeroGPU por IP)
     try {
-        const orPayload = JSON.stringify({
-            prompt: englishPrompt,
-            aspect: aspectRatio,
-            images: cleanRefB64 ? [cleanRefB64] : [],
-        });
-
-        const { stdout: orOut } = await execFileAsync(
-            "curl",
-            [
-                "-4",
-                "-fsSL",
-                "--max-time",
-                "45",
-                "-X",
-                "POST",
-                "https://bep40-ml-intern-flux3-comic.hf.space/api/openrouter-image",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                orPayload,
-            ],
-            { encoding: "utf8", maxBuffer: 30 * 1024 * 1024 }
+        const orOut = await curlPostJson(
+            "https://bep40-ml-intern-flux3-comic.hf.space/api/openrouter-image",
+            {
+                prompt: englishPrompt,
+                aspect: aspectRatio,
+                images: cleanRefB64 ? [cleanRefB64] : [],
+            },
+            45
         );
 
         const parsedOr = JSON.parse(orOut || "{}");
@@ -238,31 +349,17 @@ async function fetchBlackForestFluxUltraHd(
             parts.push({ inlineData: { data: cleanRefB64, mimeType: "image/png" } });
         }
 
-        const proxyPayload = JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-                aspectRatio,
-                width: dims.width,
-                height: dims.height,
+        const proxyOut = await curlPostJson(
+            "https://bep40-ml-intern-flux3-comic.hf.space/api/proxy/gemini/v1beta/models/flux-image:generateContent",
+            {
+                contents: [{ parts }],
+                generationConfig: {
+                    aspectRatio,
+                    width: dims.width,
+                    height: dims.height,
+                },
             },
-        });
-
-        const { stdout: proxyOut } = await execFileAsync(
-            "curl",
-            [
-                "-4",
-                "-fsSL",
-                "--max-time",
-                "55",
-                "-X",
-                "POST",
-                "https://bep40-ml-intern-flux3-comic.hf.space/api/proxy/gemini/v1beta/models/flux-image:generateContent",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                proxyPayload,
-            ],
-            { encoding: "utf8", maxBuffer: 30 * 1024 * 1024 }
+            55
         );
 
         const parsedProxy = JSON.parse(proxyOut || "{}");
@@ -508,7 +605,8 @@ O usuário vai fornecer uma descrição curta para gerar um(a) ${mediaType}${sty
 Retorne APENAS um JSON válido (sem markdown) no formato:
 {
   "enhancedPrompt": "Prompt fotográfico hiper-realista detalhado em inglês para máxima fidelidade no FLUX.1/Gemini (incluindo RAW photo, 85mm f/1.4 lens, natural golden hour lighting, photorealistic, ultra detailed skin and texture, 8k)",
-  "caption": "Legenda persuasiva em português pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)"
+  "caption": "Legenda persuasiva em português pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)",
+  "speechText": "Fala curta, natural e persuasiva em português do Brasil (1 a 2 frases, sem emojis nem links) para ser narrada por voz no vídeo comercial"
 }`;
 
                 const rawText = await generateTextWithGeminiFallback(apiKey, rawPrompt, {
@@ -523,6 +621,9 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         data: {
                             enhancedPrompt: parsed.enhancedPrompt,
                             caption: parsed.caption || `✨ Confira essa novidade incrível! 🔥\n\n👉 Chame aqui ou clique no link para garantir!`,
+                            speechText:
+                                parsed.speechText ||
+                                `Olha só essa novidade incrível! ${rawPrompt}. Aproveite as condições especiais de hoje e garanta já o seu!`,
                         },
                     });
                 }
@@ -534,12 +635,14 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             const translatedEn = await translatePtToEnFree(rawPrompt);
             const autoEnhanced = `RAW photo, ${translatedEn}, natural golden hour sunlight, 85mm f/1.4 DSLR lens, photorealistic, ultra detailed skin and surface texture, cinematic lighting, sharp focus, 8k`;
             const autoCaption = `🔥 *Destaque Especial!* ✨\n\n${rawPrompt.charAt(0).toUpperCase() + rawPrompt.slice(1)} com condições imperdíveis!\n\n🛒 Confira agora mesmo e garanta o seu! 👇`;
+            const autoSpeech = `Olha só esse destaque especial que separamos para você hoje! ${rawPrompt}. Aproveite a oportunidade e clique no link agora mesmo!`;
 
             return NextResponse.json({
                 status: true,
                 data: {
                     enhancedPrompt: autoEnhanced,
                     caption: autoCaption,
+                    speechText: autoSpeech,
                 },
             });
         }
@@ -675,13 +778,15 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             });
         }
 
-        // 4. Gerar Vídeo (Google Veo / Flow + Renderização Cinematográfica MP4 em Alta Definição)
+        // 4. Gerar Vídeo (Movimento Multi-Cena + Fala/Locução Neural PT-BR + Áudio Estéreo MP4 HD)
         if (action === "generate-video") {
             const prompt = (body.prompt || "").trim();
             const aspectRatio: "9:16" | "16:9" = body.aspectRatio === "16:9" ? "16:9" : "9:16";
             const stylePreset = (body.stylePreset || "").trim();
             const requestedModel = body.model || "veo-2.0-generate-001";
             const caption = body.caption || "";
+            const rawSpeechText = (body.speechText || "").trim();
+            const voiceId = (body.voiceId || "br_001").trim();
             const sourceImageFilename = body.sourceImageFilename || null;
             const referenceImageBase64 = body.referenceImageBase64 || null;
             const referenceImageMimeType = body.referenceImageMimeType || "image/png";
@@ -707,6 +812,45 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     mimeType: referenceImageMimeType,
                 };
             }
+
+            // Determinar roteiro falado em Português para a locução do vídeo
+            let spokenScript = rawSpeechText;
+            if (!spokenScript && voiceId !== "none") {
+                const cleanCaption = caption
+                    .replace(/https?:\/\/\S+/g, "")
+                    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+                    .replace(/[*_~`#]/g, "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+
+                if (cleanCaption && cleanCaption.length >= 12) {
+                    spokenScript = cleanCaption.slice(0, 260);
+                } else {
+                    const isAlreadyEnglish = /^RAW photo/i.test(prompt);
+                    spokenScript = isAlreadyEnglish
+                        ? "Olha só essa novidade exclusiva que preparamos para você hoje! Aproveite as condições especiais e garanta já!"
+                        : `Olha só que incrível: ${prompt.slice(0, 140)}! Aproveite a oportunidade exclusiva de hoje e garanta já!`;
+                }
+            }
+
+            const dir = getStudioDir(sessionId);
+            await fs.mkdir(dir, { recursive: true });
+            const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const tempSpeechPath = path.join(dir, `${tempId}_speech.mp3`);
+            let hasSpeechAudio = false;
+
+            if (voiceId !== "none" && spokenScript) {
+                try {
+                    hasSpeechAudio = await synthesizePortugueseVoiceover(spokenScript, voiceId, tempSpeechPath);
+                } catch (ttsErr: any) {
+                    logger.warn("AiStudio", `Falha ao sintetizar locução PT-BR (${ttsErr?.message?.slice(0, 80)})`);
+                }
+            }
+
+            const wordCount = spokenScript ? spokenScript.split(/\s+/).filter(Boolean).length : 0;
+            const totalDur = hasSpeechAudio
+                ? Math.max(6, Math.min(14, Math.ceil(wordCount / 2.2) + 1.5))
+                : 6;
 
             let videoBuffer: Buffer | null = null;
             let usedModel = requestedModel;
@@ -749,64 +893,226 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     }
                 }
             } catch (err: any) {
-                logger.warn("AiStudio", `Modelo de vídeo ${requestedModel} indisponível (${err?.message?.slice(0, 100)}), usando FLUX.1 8K + Motion Render FFmpeg...`);
+                logger.warn("AiStudio", `Modelo de vídeo ${requestedModel} indisponível (${err?.message?.slice(0, 100)}), usando Motor Multi-Cena Dinâmico + Voz Neural PT-BR...`);
             }
 
-            // Motor Híbrido de Vídeo HD (Fotografia 8K FLUX.1 + Câmera Cinematográfica MP4 com FFmpeg)
-            if (!videoBuffer) {
-                logger.info("AiStudio", "Gerando vídeo MP4 HD com motor híbrido (FLUX.1 8K + Motion Render FFmpeg)...");
-                const dir = getStudioDir(sessionId);
-                await fs.mkdir(dir, { recursive: true });
+            // Se o Veo gerou vídeo sem áudio e temos locução PT-BR, mixar a locução no vídeo do Veo
+            if (videoBuffer && hasSpeechAudio) {
+                const veoRawPath = path.join(dir, `${tempId}_veo_raw.mp4`);
+                const veoMuxPath = path.join(dir, `${tempId}_veo_mux.mp4`);
+                try {
+                    await fs.writeFile(veoRawPath, videoBuffer);
+                    await execFileAsync("ffmpeg", [
+                        "-y",
+                        "-i",
+                        veoRawPath,
+                        "-i",
+                        tempSpeechPath,
+                        "-c:v",
+                        "copy",
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "128k",
+                        "-shortest",
+                        "-movflags",
+                        "+faststart",
+                        veoMuxPath,
+                    ]);
+                    videoBuffer = await fs.readFile(veoMuxPath);
+                } catch {} finally {
+                    await fs.unlink(veoRawPath).catch(() => {});
+                    await fs.unlink(veoMuxPath).catch(() => {});
+                }
+            }
 
-                let baseFrameBuffer: Buffer;
+            // Motor Multi-Cena Dinâmico HD (2 Poses/Ângulos Coerentes + Transição Cinematográfica + Fala Neural PT-BR + Trilha Sonora)
+            if (!videoBuffer) {
+                logger.info("AiStudio", "Gerando vídeo MP4 HD com movimento multi-cena, fala neural PT-BR e trilha de áudio...");
+
+                const englishPrompt = await buildEnglishVisualPromptWithGemini(
+                    apiKey,
+                    prompt,
+                    stylePreset,
+                    referenceImageBase64,
+                    referenceImageMimeType
+                );
+
+                let frame1Buffer: Buffer;
                 if (imageInput?.imageBytes) {
-                    baseFrameBuffer = Buffer.from(imageInput.imageBytes, "base64");
+                    frame1Buffer = Buffer.from(imageInput.imageBytes, "base64");
                 } else {
-                    const englishPrompt = await buildEnglishVisualPromptWithGemini(
-                        apiKey,
-                        prompt,
-                        stylePreset,
-                        referenceImageBase64,
-                        referenceImageMimeType
-                    );
-                    baseFrameBuffer = await fetchBlackForestFluxUltraHd(englishPrompt, aspectRatio);
+                    frame1Buffer = await fetchBlackForestFluxUltraHd(englishPrompt, aspectRatio);
                 }
 
-                const tempId = `tmp_${Date.now()}`;
-                const tempImgPath = path.join(dir, `${tempId}.png`);
+                // Gerar Quadro 2 (mesma pessoa/produto em nova pose, gesto expressivo falando para a câmera e novo ângulo)
+                let frame2Buffer: Buffer = frame1Buffer;
+                try {
+                    const frame1B64 = frame1Buffer.toString("base64");
+                    const shot2Prompt = `Exact same person or main subject, exact same outfit and background environment from the reference image, now in a closer medium-close camera angle, speaking warmly and enthusiastically to the camera with an expressive hand gesture and natural lively body movement, 8k photorealistic DSLR. ${englishPrompt}`;
+                    frame2Buffer = await fetchBlackForestFluxUltraHd(shot2Prompt, aspectRatio, frame1B64);
+                } catch (shot2Err: any) {
+                    logger.warn("AiStudio", `Quadro 2 dinâmico usará ângulo alternativo do Quadro 1 (${shot2Err?.message?.slice(0, 80)})`);
+                }
+
+                const tempImg1Path = path.join(dir, `${tempId}_f1.png`);
+                const tempImg2Path = path.join(dir, `${tempId}_f2.png`);
                 const tempMp4Path = path.join(dir, `${tempId}.mp4`);
-                await fs.writeFile(tempImgPath, baseFrameBuffer);
+                await fs.writeFile(tempImg1Path, frame1Buffer);
+                await fs.writeFile(tempImg2Path, frame2Buffer);
 
                 const outW = aspectRatio === "16:9" ? 1280 : 720;
                 const outH = aspectRatio === "16:9" ? 720 : 1280;
 
+                const fadeDur = 0.6;
+                const shot1Sec = Number((totalDur * 0.52).toFixed(1));
+                const shot2Sec = Number((totalDur - shot1Sec + fadeDur).toFixed(1));
+                const shot1Frames = Math.round(shot1Sec * 25);
+                const shot2Frames = Math.round(shot2Sec * 25);
+                const xfadeOffset = Number((shot1Sec - fadeDur).toFixed(2));
+                const fadeOutStart = Math.max(1, Number((totalDur - 1.2).toFixed(1)));
+
                 try {
-                    await execFileAsync("ffmpeg", [
+                    const vFilter = [
+                        `[0:v]scale=${outW * 2}:${outH * 2}:force_original_aspect_ratio=increase,crop=${outW * 2}:${outH * 2},zoompan=z='min(zoom+0.0018,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${shot1Frames}:s=${outW}x${outH}:fps=25,setsar=1,format=yuv420p[v0]`,
+                        `[1:v]scale=${outW * 2}:${outH * 2}:force_original_aspect_ratio=increase,crop=${outW * 2}:${outH * 2},zoompan=z='if(eq(on,1),1.15,max(zoom-0.0015,1.0))':x='iw/2-(iw/zoom/2)+sin(on/14)*12':y='ih/2-(ih/zoom/2)':d=${shot2Frames}:s=${outW}x${outH}:fps=25,setsar=1,format=yuv420p[v1]`,
+                        `[v0][v1]xfade=transition=fade:duration=${fadeDur}:offset=${xfadeOffset},format=yuv420p[vout]`,
+                    ].join(";");
+
+                    if (hasSpeechAudio) {
+                        const aFilter = [
+                            `[2:a]aresample=44100,volume=1.5,apad=whole_dur=${totalDur}[voice]`,
+                            `[3:a]aresample=44100,afade=t=in:st=0:d=0.6,afade=t=out:st=${fadeOutStart}:d=1.2[bgm]`,
+                            `[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2,asetpts=PTS-STARTPTS[aout]`,
+                        ].join(";");
+
+                        await execFileAsync("ffmpeg", [
+                            "-y",
+                            "-loop",
+                            "1",
+                            "-t",
+                            String(shot1Sec + 0.5),
+                            "-i",
+                            tempImg1Path,
+                            "-loop",
+                            "1",
+                            "-t",
+                            String(shot2Sec + 0.5),
+                            "-i",
+                            tempImg2Path,
+                            "-i",
+                            tempSpeechPath,
+                            "-f",
+                            "lavfi",
+                            "-t",
+                            String(totalDur + 1),
+                            "-i",
+                            "aevalsrc=0.018*sin(2*PI*220*t)+0.014*sin(2*PI*277.18*t)+0.014*sin(2*PI*329.63*t)+0.01*sin(2*PI*440*t):s=44100",
+                            "-filter_complex",
+                            `${vFilter};${aFilter}`,
+                            "-map",
+                            "[vout]",
+                            "-map",
+                            "[aout]",
+                            "-t",
+                            String(totalDur),
+                            "-c:v",
+                            "libx264",
+                            "-preset",
+                            "ultrafast",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "128k",
+                            "-movflags",
+                            "+faststart",
+                            tempMp4Path,
+                        ]);
+                    } else {
+                        const aFilterOnlyBgm = `[2:a]aresample=44100,afade=t=in:st=0:d=0.6,afade=t=out:st=${fadeOutStart}:d=1.2[aout]`;
+                        await execFileAsync("ffmpeg", [
+                            "-y",
+                            "-loop",
+                            "1",
+                            "-t",
+                            String(shot1Sec + 0.5),
+                            "-i",
+                            tempImg1Path,
+                            "-loop",
+                            "1",
+                            "-t",
+                            String(shot2Sec + 0.5),
+                            "-i",
+                            tempImg2Path,
+                            "-f",
+                            "lavfi",
+                            "-t",
+                            String(totalDur + 1),
+                            "-i",
+                            "aevalsrc=0.03*sin(2*PI*220*t)+0.025*sin(2*PI*277.18*t)+0.025*sin(2*PI*329.63*t)+0.018*sin(2*PI*440*t):s=44100",
+                            "-filter_complex",
+                            `${vFilter};${aFilterOnlyBgm}`,
+                            "-map",
+                            "[vout]",
+                            "-map",
+                            "[aout]",
+                            "-t",
+                            String(totalDur),
+                            "-c:v",
+                            "libx264",
+                            "-preset",
+                            "ultrafast",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "128k",
+                            "-movflags",
+                            "+faststart",
+                            tempMp4Path,
+                        ]);
+                    }
+
+                    videoBuffer = await fs.readFile(tempMp4Path);
+                    usedModel = hasSpeechAudio ? "flux-cinema-voice-ptbr-mp4" : "flux-1-cinema-motion-mp4";
+                } catch (ffErr: any) {
+                    logger.warn("AiStudio", `Filtro avançado FFmpeg falhou (${ffErr?.message?.slice(0, 120)}), usando fallback simplificado com voz...`);
+                    const fallbackArgs = [
                         "-y",
                         "-loop",
                         "1",
                         "-i",
-                        tempImgPath,
+                        tempImg1Path,
+                        ...(hasSpeechAudio ? ["-i", tempSpeechPath] : []),
                         "-vf",
-                        `scale=${outW * 2}:${outH * 2}:force_original_aspect_ratio=increase,crop=${outW * 2}:${outH * 2},zoompan=z='min(zoom+0.0012,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=150:s=${outW}x${outH}:fps=25,format=yuv420p`,
+                        `scale=${outW * 2}:${outH * 2}:force_original_aspect_ratio=increase,crop=${outW * 2}:${outH * 2},zoompan=z='min(zoom+0.0015,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(totalDur * 25)}:s=${outW}x${outH}:fps=25,format=yuv420p`,
                         "-t",
-                        "6",
+                        String(totalDur),
                         "-c:v",
                         "libx264",
                         "-preset",
                         "ultrafast",
                         "-pix_fmt",
                         "yuv420p",
+                        ...(hasSpeechAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
                         "-movflags",
                         "+faststart",
                         tempMp4Path,
-                    ]);
+                    ];
+                    await execFileAsync("ffmpeg", fallbackArgs);
                     videoBuffer = await fs.readFile(tempMp4Path);
-                    usedModel = "flux-1-cinema-motion-mp4";
+                    usedModel = "flux-cinema-voice-ptbr-mp4";
                 } finally {
-                    await fs.unlink(tempImgPath).catch(() => {});
+                    await fs.unlink(tempImg1Path).catch(() => {});
+                    await fs.unlink(tempImg2Path).catch(() => {});
                     await fs.unlink(tempMp4Path).catch(() => {});
+                    await fs.unlink(tempSpeechPath).catch(() => {});
                 }
+            } else {
+                await fs.unlink(tempSpeechPath).catch(() => {});
             }
 
             if (!videoBuffer) {

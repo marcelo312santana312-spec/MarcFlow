@@ -121,6 +121,8 @@ export default function AiStudioPage() {
     const [mode, setMode] = useState<"image" | "video">("image");
     const [prompt, setPrompt] = useState("");
     const [caption, setCaption] = useState("");
+    const [speechText, setSpeechText] = useState("");
+    const [voiceId, setVoiceId] = useState("br_001");
     const [stylePreset, setStylePreset] = useState(STYLE_PRESETS[0].value);
     const [aspectRatio, setAspectRatio] = useState<"9:16" | "1:1" | "16:9">("9:16");
     const [imageModel, setImageModel] = useState("flux-1-ultra-hd");
@@ -260,7 +262,8 @@ export default function AiStudioPage() {
             if (json.status && json.data) {
                 if (json.data.enhancedPrompt) setPrompt(json.data.enhancedPrompt);
                 if (json.data.caption) setCaption(json.data.caption);
-                toast.success("Prompt otimizado e legenda persuasiva criada com IA!");
+                if (json.data.speechText) setSpeechText(json.data.speechText);
+                toast.success("Prompt otimizado, fala narrada e legenda criadas com IA!");
             } else {
                 toast.error(json.message || "Não foi possível otimizar o prompt.");
             }
@@ -340,6 +343,8 @@ export default function AiStudioPage() {
                           stylePreset,
                           model: videoModel,
                           caption: caption.trim(),
+                          speechText: speechText.trim(),
+                          voiceId,
                           sourceImageFilename: sourceGalleryFilename,
                           referenceImageBase64,
                           referenceImageMimeType: referenceImageMime,
@@ -572,11 +577,46 @@ export default function AiStudioPage() {
                                 placeholder={
                                     mode === "image"
                                         ? "Ex.: Fone de ouvido bluetooth branco sobre uma mesa moderna iluminada por neon suave, estética de anúncio de oferta do Mercado Livre..."
-                                        : "Ex.: Câmera girando suavemente em câmera lenta ao redor de um tênis esportivo flutuando com partículas de luz dourada ao fundo..."
+                                        : "Ex.: Mulher loira jovem em frente a uma loja apresentando novidade e gesticulando com sorriso natural..."
                                 }
                                 className="resize-none text-sm"
                             />
                         </div>
+
+                        {/* Fala / Narração em Português + Voz Neural (Modo Vídeo) */}
+                        {mode === "video" && (
+                            <div className="space-y-3 p-3.5 rounded-xl border border-purple-500/25 bg-purple-500/5">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <Label className="text-xs font-semibold uppercase tracking-wider text-purple-800 dark:text-purple-300 flex items-center gap-1.5">
+                                        🎙️ Fala / Locução em Português & Áudio do Vídeo
+                                    </Label>
+                                    <select
+                                        value={voiceId}
+                                        onChange={(e) => setVoiceId(e.target.value)}
+                                        className="h-8 rounded-lg border border-purple-300 dark:border-purple-800 bg-white dark:bg-slate-900 px-2.5 text-xs font-medium text-purple-900 dark:text-purple-200"
+                                    >
+                                        <option value="br_001">👩 Voz Feminina Natural (Vitória PT-BR + Trilha)</option>
+                                        <option value="br_003">👱‍♀️ Voz Feminina Vibrante (Jovem Reels/Status + Trilha)</option>
+                                        <option value="br_005">👨 Voz Masculina Comercial (Locutor PT-BR + Trilha)</option>
+                                        <option value="none">🎵 Apenas Trilha Sonora Ambiente (Sem Fala)</option>
+                                    </select>
+                                </div>
+                                {voiceId !== "none" && (
+                                    <div className="space-y-1">
+                                        <Textarea
+                                            rows={2}
+                                            value={speechText}
+                                            onChange={(e) => setSpeechText(e.target.value)}
+                                            placeholder="Digite o que será falado no vídeo em português (ex.: Olá! Venha conhecer as ofertas exclusivas da nossa loja hoje mesmo!). Se deixar em branco, a IA cria a fala automaticamente!"
+                                            className="resize-none text-xs bg-white dark:bg-slate-950"
+                                        />
+                                        <p className="text-[11px] text-purple-700/80 dark:text-purple-300/80">
+                                            ✨ O vídeo será gerado com <strong>movimento multi-ângulo coerente</strong> (personagem/cena mudando de pose e gesticulando), <strong>locução falada em português</strong> e <strong>trilha de áudio</strong>.
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         {/* Style Presets */}
                         <div className="space-y-2">
