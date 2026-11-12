@@ -85,13 +85,13 @@ function createGenAIClients(apiKey: string): { primary: GoogleGenAI; secondary: 
     const isVertexKey = apiKey.startsWith("AQ.");
     const primary = new GoogleGenAI(
         isVertexKey
-            ? { vertexai: true, apiKey, project: "764911395009", location: "us-central1" }
+            ? { vertexai: true, apiKey, project: "gen-lang-client-0642333908", location: "us-central1" }
             : { apiKey }
     );
     const secondary = new GoogleGenAI(
         isVertexKey
             ? { vertexai: false, apiKey }
-            : { vertexai: true, apiKey, project: "764911395009", location: "us-central1" }
+            : { vertexai: true, apiKey, project: "gen-lang-client-0642333908", location: "us-central1" }
     );
     return { primary, secondary, isVertexKey };
 }
