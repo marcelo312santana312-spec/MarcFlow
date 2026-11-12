@@ -31,13 +31,22 @@ function getStudioDir(sessionId: string): string {
     return path.join(process.cwd(), "public", "ai-studio", safeSession);
 }
 
+function buildFileUrl(sessionId: string, filename: string): string {
+    const safeSession = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+    return `/api/ai-studio/${safeSession}?file=${encodeURIComponent(path.basename(filename))}`;
+}
+
 async function readGalleryIndex(sessionId: string): Promise<AiStudioMediaItem[]> {
     const dir = getStudioDir(sessionId);
     const indexPath = path.join(dir, "index.json");
     try {
         const raw = await fs.readFile(indexPath, "utf-8");
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((item: AiStudioMediaItem) => ({
+            ...item,
+            url: buildFileUrl(sessionId, item.filename),
+        }));
     } catch {
         return [];
     }
@@ -68,6 +77,13 @@ async function resolveGeminiApiKey(sessionId: string): Promise<{ apiKey: string 
         apiKey: keyFromDb || keyFromEnv || null,
         dbSessionId: session?.id || null,
     };
+}
+
+function createGenAIClient(apiKey: string): { ai: GoogleGenAI; isVertexKey: boolean } {
+    // Chaves iniciadas com "AQ." são chaves do Google Cloud Vertex AI Express Mode (Gemini Enterprise Agent Platform)
+    const isVertexKey = apiKey.startsWith("AQ.");
+    const ai = new GoogleGenAI(isVertexKey ? { vertexai: true, apiKey } : { apiKey });
+    return { ai, isVertexKey };
 }
 
 function sanitizeJid(rawJid: string): string {
@@ -144,8 +160,19 @@ async function fetchFluxImageFallback(
             : { width: 1024, height: 1024 };
 
     const seed = Math.floor(Math.random() * 1000000);
-    const cleanPrompt = englishPrompt.slice(0, 450);
+    const cleanPrompt = englishPrompt.slice(0, 400);
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${dims.width}&height=${dims.height}&seed=${seed}&nologo=true&model=flux`;
+
+    try {
+        const { stdout } = await execFileAsync(
+            "curl",
+            ["-4", "-fsSL", "--max-time", "45", "-A", "Mozilla/5.0 MarcFlow/1.0", url],
+            { encoding: "buffer", maxBuffer: 25 * 1024 * 1024 }
+        );
+        if (stdout && stdout.length > 1000) {
+            return Buffer.from(stdout);
+        }
+    } catch {}
 
     const res = await fetch(url, {
         headers: {
@@ -157,16 +184,54 @@ async function fetchFluxImageFallback(
     if (!res.ok) {
         throw new Error(`Servidor de renderização retornou status ${res.status}`);
     }
-    return Buffer.from(await res.arrayBuffer());
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 1000) {
+        throw new Error("A imagem retornada pelo servidor está vazia ou incompleta.");
+    }
+    return buf;
 }
 
-// GET: List generated media & check API Key status
+// GET: Serve media file (?file=...) OR List generated media & check API Key status
 export async function GET(
     request: NextRequest,
     { params }: { params: Promise<{ sessionId: string }> }
 ) {
     try {
         const { sessionId } = await params;
+
+        // Se tiver ?file=..., entrega os bytes da imagem/vídeo diretamente por esta rota (100% compatível com Next dev sem reiniciar)
+        const requestedFile = request.nextUrl.searchParams.get("file");
+        if (requestedFile) {
+            const safeSession = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+            const safeFile = path.basename(requestedFile);
+            const filePath = path.join(process.cwd(), "public", "ai-studio", safeSession, safeFile);
+
+            try {
+                const buffer = await fs.readFile(filePath);
+                const ext = path.extname(safeFile).toLowerCase();
+                const mimeType =
+                    ext === ".mp4"
+                        ? "video/mp4"
+                        : ext === ".webp"
+                        ? "image/webp"
+                        : ext === ".jpg" || ext === ".jpeg"
+                        ? "image/jpeg"
+                        : "image/png";
+
+                return new NextResponse(new Uint8Array(buffer), {
+                    status: 200,
+                    headers: {
+                        "Content-Type": mimeType,
+                        "Content-Length": String(buffer.length),
+                        "Content-Disposition": `inline; filename="${safeFile}"`,
+                        "Cache-Control": "public, max-age=31536000, immutable",
+                    },
+                });
+            } catch {
+                return NextResponse.json({ status: false, message: "Arquivo não encontrado no disco" }, { status: 404 });
+            }
+        }
+
         const user = await getAuthenticatedUser(request);
         if (!user) {
             return NextResponse.json({ status: false, message: "Não autorizado" }, { status: 401 });
@@ -263,7 +328,7 @@ export async function POST(
             );
         }
 
-        const ai = new GoogleGenAI({ apiKey });
+        const { ai, isVertexKey } = createGenAIClient(apiKey);
 
         // 2. Otimizar Prompt + Gerar Legenda para WhatsApp
         if (action === "enhance-prompt") {
@@ -304,7 +369,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             });
         }
 
-        // 3. Gerar Imagem (Gemini Nano Banana 2.1 / 3.1 Flash Image / 2.5 Flash Image + Fallback Híbrido Gratuito)
+        // 3. Gerar Imagem (Suporta Vertex AI Express Mode "AQ." + Gemini Developer API "AIza" + Fallback Híbrido Flux HD)
         if (action === "generate-image") {
             const prompt = (body.prompt || "").trim();
             const aspectRatio: "1:1" | "9:16" | "16:9" = body.aspectRatio || "9:16";
@@ -332,55 +397,87 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             let imageBuffer: Buffer | null = null;
             let usedModel = requestedModel;
 
-            // Método 1: Gemini Native Image via generateContent (Nano Banana / Gemini 2.5 & 3.1 Flash Image)
-            const tryGeminiNativeImage = async (modelName: string) => {
-                const contents: any[] = [];
-                if (referenceImageBase64) {
-                    contents.push({
-                        inlineData: {
-                            data: referenceImageBase64.replace(/^data:[^;]+;base64,/, ""),
-                            mimeType: referenceImageMimeType,
-                        },
-                    });
-                }
-                contents.push({ text: `Generate a high-quality commercial image: ${fullPrompt}` });
-
-                const response = await ai.models.generateContent({
-                    model: modelName,
-                    contents,
-                    config: {
-                        responseModalities: ["TEXT", "IMAGE"],
-                    },
-                });
-
-                const parts = response.candidates?.[0]?.content?.parts || [];
-                for (const part of parts) {
-                    if (part.inlineData?.data) {
-                        usedModel = modelName;
-                        return Buffer.from(part.inlineData.data, "base64");
+            // Se a chave for Vertex AI (AQ....) e não tiver foto de referência, tenta primeiro Imagen 3 / Imagen 4 nativo do Vertex AI!
+            if (isVertexKey && !referenceImageBase64) {
+                for (const vertexImagenModel of ["imagen-3.0-generate-002", "imagen-4.0-generate-001"]) {
+                    try {
+                        const res = await ai.models.generateImages({
+                            model: vertexImagenModel,
+                            prompt: fullPrompt,
+                            config: {
+                                numberOfImages: 1,
+                                aspectRatio,
+                                outputMimeType: "image/png",
+                            },
+                        });
+                        const b64 = res.generatedImages?.[0]?.image?.imageBytes;
+                        if (b64) {
+                            const buf = Buffer.from(b64, "base64");
+                            if (buf.length > 1000) {
+                                imageBuffer = buf;
+                                usedModel = vertexImagenModel;
+                                break;
+                            }
+                        }
+                    } catch (err: any) {
+                        logger.warn("AiStudio", `Vertex Imagen ${vertexImagenModel} indisponível (${err?.message?.slice(0, 120)}), tentando próximo...`);
                     }
-                }
-                throw new Error(`O modelo ${modelName} não retornou bytes de imagem.`);
-            };
-
-            // Ordem de tentativa nos modelos oficiais Nano Banana da Gemini API
-            const geminiImageModels =
-                requestedModel && requestedModel !== "auto" && !requestedModel.startsWith("imagen-")
-                    ? [requestedModel, "gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"]
-                    : ["gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-nano-banana-2.1"];
-
-            for (const mName of Array.from(new Set(geminiImageModels))) {
-                try {
-                    imageBuffer = await tryGeminiNativeImage(mName);
-                    if (imageBuffer) break;
-                } catch (err: any) {
-                    logger.warn("AiStudio", `Modelo Gemini Image ${mName} indisponível na chave atual (${err?.message?.slice(0, 120)}), tentando próximo...`);
                 }
             }
 
-            // Fallback Automático Híbrido (caso a GEMINI_API_KEY esteja no plano Gratuito sem faturamento para Nano Banana)
+            // Método 2: Gemini Native Image via generateContent (Nano Banana / Gemini 2.5 & 3.1 Flash Image)
             if (!imageBuffer) {
-                logger.info("AiStudio", "Usando motor híbrido Gemini Prompt Director + Flux HD (compatível com GEMINI_API_KEY gratuita)...");
+                const tryGeminiNativeImage = async (modelName: string) => {
+                    const contents: any[] = [];
+                    if (referenceImageBase64) {
+                        contents.push({
+                            inlineData: {
+                                data: referenceImageBase64.replace(/^data:[^;]+;base64,/, ""),
+                                mimeType: referenceImageMimeType,
+                            },
+                        });
+                    }
+                    contents.push({ text: `Generate a high-quality commercial image: ${fullPrompt}` });
+
+                    const response = await ai.models.generateContent({
+                        model: modelName,
+                        contents,
+                        config: {
+                            responseModalities: ["TEXT", "IMAGE"],
+                        },
+                    });
+
+                    const parts = response.candidates?.[0]?.content?.parts || [];
+                    for (const part of parts) {
+                        if (part.inlineData?.data) {
+                            const buf = Buffer.from(part.inlineData.data, "base64");
+                            if (buf.length > 1000) {
+                                usedModel = modelName;
+                                return buf;
+                            }
+                        }
+                    }
+                    throw new Error(`O modelo ${modelName} não retornou bytes de imagem.`);
+                };
+
+                const geminiImageModels =
+                    requestedModel && requestedModel !== "auto" && !requestedModel.startsWith("imagen-")
+                        ? [requestedModel, "gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"]
+                        : ["gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-nano-banana-2.1"];
+
+                for (const mName of Array.from(new Set(geminiImageModels))) {
+                    try {
+                        imageBuffer = await tryGeminiNativeImage(mName);
+                        if (imageBuffer) break;
+                    } catch (err: any) {
+                        logger.warn("AiStudio", `Modelo Gemini Image ${mName} indisponível (${err?.message?.slice(0, 120)}), tentando próximo...`);
+                    }
+                }
+            }
+
+            // Método 3: Fallback Automático Híbrido (Gemini Prompt Director + Flux HD)
+            if (!imageBuffer) {
+                logger.info("AiStudio", "Usando motor híbrido Gemini Prompt Director + Flux HD...");
                 const englishPrompt = await buildEnglishVisualPromptWithGemini(
                     ai,
                     prompt,
@@ -409,7 +506,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 model: usedModel,
                 aspectRatio,
                 filename,
-                url: `/api/ai-studio/${safeSession}/file/${filename}`,
+                url: buildFileUrl(sessionId, filename),
                 localPath: `public/ai-studio/${safeSession}/${filename}`,
                 createdAt: new Date().toISOString(),
             };
@@ -417,7 +514,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             const existing = await readGalleryIndex(sessionId);
             await writeGalleryIndex(sessionId, [item, ...existing]);
 
-            logger.success("AiStudio", `Imagem gerada com sucesso (${usedModel}): ${filename}`);
+            logger.success("AiStudio", `Imagem gerada com sucesso (${usedModel}, ${imageBuffer.length} bytes): ${filename}`);
             return NextResponse.json({
                 status: true,
                 message: "Imagem gerada com sucesso!",
@@ -425,7 +522,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             });
         }
 
-        // 4. Gerar Vídeo (Google Veo / Gemini Omni Flash + Fallback Motion Studio MP4 para chaves gratuitas)
+        // 4. Gerar Vídeo (Google Veo / Gemini Omni Flash + Fallback Motion Studio MP4)
         if (action === "generate-video") {
             const prompt = (body.prompt || "").trim();
             const aspectRatio: "9:16" | "16:9" = body.aspectRatio === "16:9" ? "16:9" : "9:16";
@@ -512,7 +609,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         }
                     }
                 } catch (err: any) {
-                    logger.warn("AiStudio", `Modelo de vídeo ${m} indisponível na chave atual (${err?.message?.slice(0, 120)}), tentando próximo...`);
+                    logger.warn("AiStudio", `Modelo de vídeo ${m} indisponível (${err?.message?.slice(0, 120)}), tentando próximo...`);
                 }
             }
 
@@ -545,7 +642,6 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 const outH = aspectRatio === "16:9" ? 720 : 1280;
 
                 try {
-                    // Cria movimento cinematográfico suave de 6 segundos (25fps = 150 frames) em H.264 compatível com WhatsApp Status e Reels
                     await execFileAsync("ffmpeg", [
                         "-y",
                         "-loop",
@@ -595,7 +691,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 model: usedModel,
                 aspectRatio,
                 filename,
-                url: `/api/ai-studio/${safeSession}/file/${filename}`,
+                url: buildFileUrl(sessionId, filename),
                 localPath: `public/ai-studio/${safeSession}/${filename}`,
                 createdAt: new Date().toISOString(),
             };
