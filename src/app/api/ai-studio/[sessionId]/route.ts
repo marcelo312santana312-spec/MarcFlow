@@ -179,7 +179,8 @@ async function buildEnglishVisualPromptWithGemini(
 
 async function fetchBlackForestFluxUltraHd(
     englishPrompt: string,
-    aspectRatio: string
+    aspectRatio: string,
+    referenceImageBase64?: string | null
 ): Promise<Buffer> {
     const dims =
         aspectRatio === "9:16"
@@ -188,16 +189,116 @@ async function fetchBlackForestFluxUltraHd(
             ? { width: 1344, height: 768 }
             : { width: 1024, height: 1024 };
 
-    const bflSpaces = [
-        "https://black-forest-labs-flux-1-schnell.hf.space",
-        "https://black-forest-labs-flux-1-dev.hf.space",
+    const cleanRefB64 = referenceImageBase64
+        ? referenceImageBase64.replace(/^data:[^;]+;base64,/, "")
+        : null;
+
+    // 1. Provedor Dedicado 1: OpenRouter Gemini 3.1 Flash Image + FLUX-3 Klein Autenticado (Sem limite ZeroGPU por IP)
+    try {
+        const orPayload = JSON.stringify({
+            prompt: englishPrompt,
+            aspect: aspectRatio,
+            images: cleanRefB64 ? [cleanRefB64] : [],
+        });
+
+        const { stdout: orOut } = await execFileAsync(
+            "curl",
+            [
+                "-4",
+                "-fsSL",
+                "--max-time",
+                "45",
+                "-X",
+                "POST",
+                "https://bep40-ml-intern-flux3-comic.hf.space/api/openrouter-image",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                orPayload,
+            ],
+            { encoding: "utf8", maxBuffer: 30 * 1024 * 1024 }
+        );
+
+        const parsedOr = JSON.parse(orOut || "{}");
+        if (parsedOr.b64) {
+            const rawB64 = String(parsedOr.b64).replace(/^data:[^;]+;base64,/, "");
+            const buf = Buffer.from(rawB64, "base64");
+            if (buf.length > 5000) {
+                return await sharp(buf).png({ quality: 100 }).toBuffer();
+            }
+        }
+    } catch (err: any) {
+        logger.warn("AiStudio", `Provedor dedicado 1 (OpenRouter/FLUX-3) indisponível (${err?.message?.slice(0, 100)}), tentando Provedor 2...`);
+    }
+
+    // 2. Provedor Dedicado 2: Proxy Direto FLUX-3 Image Klein 16-Steps com Token HF Dedicado
+    try {
+        const parts: any[] = [{ text: englishPrompt }];
+        if (cleanRefB64) {
+            parts.push({ inlineData: { data: cleanRefB64, mimeType: "image/png" } });
+        }
+
+        const proxyPayload = JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: {
+                aspectRatio,
+                width: dims.width,
+                height: dims.height,
+            },
+        });
+
+        const { stdout: proxyOut } = await execFileAsync(
+            "curl",
+            [
+                "-4",
+                "-fsSL",
+                "--max-time",
+                "55",
+                "-X",
+                "POST",
+                "https://bep40-ml-intern-flux3-comic.hf.space/api/proxy/gemini/v1beta/models/flux-image:generateContent",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                proxyPayload,
+            ],
+            { encoding: "utf8", maxBuffer: 30 * 1024 * 1024 }
+        );
+
+        const parsedProxy = JSON.parse(proxyOut || "{}");
+        const b64Data = parsedProxy?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (b64Data) {
+            const buf = Buffer.from(b64Data, "base64");
+            if (buf.length > 5000) {
+                return await sharp(buf).png({ quality: 100 }).toBuffer();
+            }
+        }
+    } catch (err: any) {
+        logger.warn("AiStudio", `Provedor dedicado 2 (FLUX-3 Proxy) indisponível (${err?.message?.slice(0, 100)}), tentando Provedor 3...`);
+    }
+
+    // 3. Provedor 3: Pool Gradio FLUX (FLUX-3 Klein + Black Forest Labs FLUX.1 Schnell / Dev)
+    const gradioPool = [
+        {
+            url: "https://bep40-flux-3-image-klein.hf.space",
+            endpoint: "generate",
+            data: [englishPrompt, null, "Distilled (16 steps)", 0, true, dims.width, dims.height, 16, 1.0, true],
+        },
+        {
+            url: "https://black-forest-labs-flux-1-schnell.hf.space",
+            endpoint: "infer",
+            data: [englishPrompt, 0, true, dims.width, dims.height, 4],
+        },
+        {
+            url: "https://black-forest-labs-flux-1-dev.hf.space",
+            endpoint: "infer",
+            data: [englishPrompt, 0, true, dims.width, dims.height, 20],
+        },
     ];
 
-    for (const spaceUrl of bflSpaces) {
+    for (const provider of gradioPool) {
         try {
-            const payload = JSON.stringify({
-                data: [englishPrompt, 0, true, dims.width, dims.height, 4],
-            });
+            const payload = JSON.stringify({ data: provider.data });
 
             const { stdout: postOut } = await execFileAsync(
                 "curl",
@@ -208,7 +309,7 @@ async function fetchBlackForestFluxUltraHd(
                     "25",
                     "-X",
                     "POST",
-                    `${spaceUrl}/gradio_api/call/infer`,
+                    `${provider.url}/gradio_api/call/${provider.endpoint}`,
                     "-H",
                     "Content-Type: application/json",
                     "-d",
@@ -223,7 +324,7 @@ async function fetchBlackForestFluxUltraHd(
 
             const { stdout: sseOut } = await execFileAsync(
                 "curl",
-                ["-4", "-fsSL", "--max-time", "60", `${spaceUrl}/gradio_api/call/infer/${eventId}`],
+                ["-4", "-fsSL", "--max-time", "60", `${provider.url}/gradio_api/call/${provider.endpoint}/${eventId}`],
                 { encoding: "utf8" }
             );
 
@@ -231,7 +332,8 @@ async function fetchBlackForestFluxUltraHd(
             if (!match) continue;
 
             const eventData = JSON.parse(match[1]);
-            const fileUrl: string | undefined = eventData?.[0]?.url;
+            const firstItem = Array.isArray(eventData?.[0]) ? eventData[0][0] : eventData?.[0];
+            const fileUrl: string | undefined = firstItem?.url || firstItem?.image?.url;
             if (!fileUrl) continue;
 
             const { stdout: rawImgBuf } = await execFileAsync(
@@ -245,11 +347,11 @@ async function fetchBlackForestFluxUltraHd(
                 return pngBuffer;
             }
         } catch (err: any) {
-            logger.warn("AiStudio", `Tentativa em ${spaceUrl} falhou (${err?.message?.slice(0, 100)}), tentando próximo...`);
+            logger.warn("AiStudio", `Tentativa em ${provider.url} falhou (${err?.message?.slice(0, 100)}), tentando próximo...`);
         }
     }
 
-    throw new Error("Os servidores de renderização fotográfica FLUX.1 estão ocupados no momento. Tente novamente em alguns segundos.");
+    throw new Error("Os servidores de renderização fotográfica FLUX estão temporariamente ocupados. Tente novamente em alguns instantes.");
 }
 
 // GET: Serve media file (?file=...) OR List generated media & check API Key status
@@ -536,7 +638,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     referenceImageBase64,
                     referenceImageMimeType
                 );
-                imageBuffer = await fetchBlackForestFluxUltraHd(englishPrompt, aspectRatio);
+                imageBuffer = await fetchBlackForestFluxUltraHd(englishPrompt, aspectRatio, referenceImageBase64);
                 usedModel = "flux-1-ultra-hd";
             }
 
