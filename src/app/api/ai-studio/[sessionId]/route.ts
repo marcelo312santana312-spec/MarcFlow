@@ -361,9 +361,20 @@ async function generateWav2LipVideo(
                     "-4", "-sS", "--max-time", "180", `${host}/call/run_infrence/${eventId}`
                 ], { encoding: "utf8" });
 
-                const match = sseOut.match(/"url":s*"([^"]+)"/) || sseOut.match(/"path":s*"([^"]+.mp4)"/);
-                if (match) {
-                    let fileUrl = match[1];
+                let fileUrl = "";
+                try {
+                    const dataLines = sseOut.split("\n").filter((l: string) => l.startsWith("data:"));
+                    for (const dl of dataLines) {
+                        const jsonStr = dl.replace(/^data:\s*/, "").trim();
+                        try {
+                            const parsedData = JSON.parse(jsonStr);
+                            const vidObj = Array.isArray(parsedData) ? parsedData[0]?.video : parsedData?.video;
+                            if (vidObj?.url) { fileUrl = String(vidObj.url); break; }
+                            if (vidObj?.path) { fileUrl = String(vidObj.path); break; }
+                        } catch {}
+                    }
+                } catch {}
+                if (fileUrl) {
                     if (fileUrl.includes("/call/r/file=")) {
                         fileUrl = fileUrl.replace("/call/r/file=", "/file=");
                     } else if (fileUrl.startsWith("/")) {
