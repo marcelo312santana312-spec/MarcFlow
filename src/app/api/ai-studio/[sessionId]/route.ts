@@ -569,7 +569,85 @@ async function generateCloudDiffusionVideo(
         logger.warn("AiStudio", `Pika H3 Flex falhou (${err?.message?.slice(0, 100)}), tentando MiniMax H3 Turbo...`);
     }
 
-    // 2. Fallback para MiniMax H3 Turbo (10 steps, até 8s)
+    // 2. Provedor 2: Lightricks LTX-Video Distilled (Suporta Image-to-Video e Text-to-Video, 7-8s em ~19s, cota independente)
+    try {
+        const ltxHost = "https://lightricks-ltx-video-distilled.hf.space";
+        const ltxDur = Math.min(8, Math.max(6, Math.round(durationSec)));
+        const ltxH = aspectRatio === "9:16" ? 896 : 512;
+        const ltxW = aspectRatio === "9:16" ? 512 : 896;
+
+        let uploadedImgObj: any = null;
+        let endpoint = "text_to_video";
+        let modeStr = "text-to-video";
+
+        if (cleanImg) {
+            const tmpImgPath = path.join(os.tmpdir(), `ltx_ref_${Date.now()}.png`);
+            try {
+                await fs.writeFile(tmpImgPath, Buffer.from(cleanImg, "base64"));
+                const { stdout: upOut } = await execFileAsync(
+                    "curl",
+                    ["-4", "-fsSL", "--max-time", "25", "-F", `files=@${tmpImgPath}`, `${ltxHost}/gradio_api/upload`],
+                    { encoding: "utf8" }
+                );
+                const uploadedPaths = JSON.parse(upOut || "[]");
+                if (Array.isArray(uploadedPaths) && uploadedPaths[0]) {
+                    uploadedImgObj = { path: uploadedPaths[0], meta: { _type: "gradio.FileData" } };
+                    endpoint = "image_to_video";
+                    modeStr = "image-to-video";
+                }
+            } finally {
+                await fs.unlink(tmpImgPath).catch(() => {});
+            }
+        }
+
+        logger.info("AiStudio", `Renderizando vídeo em nuvem com Lightricks LTX-Video (${modeStr}, ${ltxW}x${ltxH}, ${ltxDur}s)...`);
+        const ltxPayload = {
+            data: [
+                fluidPrompt,
+                "worst quality, inconsistent motion, blurry, jittery, distorted, static",
+                uploadedImgObj,
+                null,
+                ltxH,
+                ltxW,
+                modeStr,
+                ltxDur,
+                9,
+                Math.floor(Math.random() * 100000),
+                true,
+                1,
+                true,
+            ],
+        };
+        const postOut = await curlPostJson(`${ltxHost}/gradio_api/call/${endpoint}`, ltxPayload, 30);
+        const { event_id } = JSON.parse(postOut || "{}");
+        if (event_id) {
+            const { stdout: sseOut } = await execFileAsync(
+                "curl",
+                ["-4", "-fsSL", "--max-time", "120", `${ltxHost}/gradio_api/call/${endpoint}/${event_id}`],
+                { encoding: "utf8" }
+            );
+            const match = sseOut.match(/data:\s*(\[[\s\S]*?\])\s*(?:\r?\n|$)/);
+            if (match) {
+                const eventData = JSON.parse(match[1]);
+                const vidUrl: string | undefined = eventData?.[0]?.video?.url || eventData?.[0]?.url;
+                if (vidUrl) {
+                    const { stdout: vidBuf } = await execFileAsync(
+                        "curl",
+                        ["-4", "-fsSL", "--max-time", "60", vidUrl],
+                        { encoding: "buffer", maxBuffer: 40 * 1024 * 1024 }
+                    );
+                    if (vidBuf && vidBuf.length > 50000) {
+                        logger.success("AiStudio", `Vídeo Lightricks LTX-Video (${ltxDur}s) gerado na nuvem! Tamanho: ${vidBuf.length} bytes`);
+                        return vidBuf;
+                    }
+                }
+            }
+        }
+    } catch (ltxErr: any) {
+        logger.warn("AiStudio", `Lightricks LTX-Video falhou (${ltxErr?.message?.slice(0, 100)}), tentando MiniMax H3 Turbo...`);
+    }
+
+    // 3. Fallback para MiniMax H3 Turbo (10 steps, até 8s)
     try {
         const h3Payload: any = {
             prompt: fluidPrompt,
