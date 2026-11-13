@@ -6,9 +6,9 @@
   "private": false,
   "license": "MIT",
   "scripts": {
-    "dev": "npx tsx src/server/index.ts",
-    "build": "next build",
-    "start": "NODE_ENV=production npx tsx src/server/index.ts",
+    "dev": "NODE_OPTIONS=\"--max-old-space-size=1536\" npx tsx src/server/index.ts",
+    "build": "NODE_OPTIONS=\"--max-old-space-size=1536\" next build",
+    "start": "NODE_ENV=production NODE_OPTIONS=\"--max-old-space-size=1536\" npx tsx src/server/index.ts",
     "lint": "eslint",
     "db:push": "prisma db push && prisma generate",
     "db:studio": "prisma studio",
