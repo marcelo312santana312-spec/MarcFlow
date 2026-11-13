@@ -126,7 +126,7 @@ export default function AiStudioPage() {
     const [stylePreset, setStylePreset] = useState(STYLE_PRESETS[0].value);
     const [aspectRatio, setAspectRatio] = useState<"9:16" | "1:1" | "16:9">("9:16");
     const [imageModel, setImageModel] = useState("flux-1-ultra-hd");
-    const [videoModel, setVideoModel] = useState("veo-2.0-generate-001");
+    const [videoModel, setVideoModel] = useState("minimax-h3-turbo");
 
     // Reference image (upload or gallery selection for Image-to-Video / Product Scene)
     const [referenceImageBase64, setReferenceImageBase64] = useState<string | null>(null);
@@ -721,14 +721,16 @@ export default function AiStudioPage() {
                                         onChange={(e) => setVideoModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="veo-2.0-generate-001">🎬 Google Veo 2.0 (Vídeo Real com Movimento Humano)</option>
-                                        <option value="veo-3.0-generate-001">🚀 Google Veo 3.0 Cinema Ultra-HD (Movimento e Física Real)</option>
+                                        <option value="minimax-h3-turbo">⚡ IA Video Diffusion Nuvem (Movimento Real de Pessoas & Cenário)</option>
+                                        <option value="veo-2.0-generate-001">🎬 Google Veo 2.0 (Vídeo Real Oficial)</option>
+                                        <option value="veo-3.0-generate-001">🚀 Google Veo 3.0 Cinema Ultra-HD</option>
+                                        <option value="cinematic-multiscene">🎞️ Cinematográfico Rápido (Transições & Trilha Sonora)</option>
                                     </select>
                                 )}
                                 <p className="text-[11px] text-muted-foreground">
                                     {mode === "image"
                                         ? "O modo Automático escolhe o melhor modelo disponível na sua conta Gemini."
-                                        : "A geração de vídeo com Veo leva cerca de 30 a 90 segundos para renderizar."}
+                                        : "Geração de vídeo com movimento contínuo de pessoas e câmera (leva cerca de 45 a 80s na nuvem com 0% uso de RAM do celular)."}
                                 </p>
                             </div>
                         </div>

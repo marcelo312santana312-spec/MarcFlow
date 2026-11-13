@@ -461,6 +461,40 @@ async function fetchBlackForestFluxUltraHd(
     throw new Error("Os servidores de renderização fotográfica FLUX estão temporariamente ocupados. Tente novamente em alguns instantes.");
 }
 
+// 4. Motor de Difusão de Vídeo Real em Nuvem (MiniMax H3 Turbo / Wan 2.1 Fast - Zero Carga no Celular)
+async function generateCloudDiffusionVideo(
+    prompt: string,
+    aspectRatio: "9:16" | "16:9",
+    imageBytesBase64?: string | null
+): Promise<Buffer | null> {
+    const host = "https://bep40-ml-intern-flux3-comic.hf.space";
+    const canvas = aspectRatio === "9:16" ? "544x960 · 9:16 fast" : "960x544 · 16:9 fast";
+    const payload: any = {
+        prompt,
+        duration: 4.0,
+        steps: 4,
+        canvas,
+    };
+    if (imageBytesBase64) {
+        payload.image = imageBytesBase64.replace(/^data:[^;]+;base64,/, "");
+    }
+    try {
+        logger.info("AiStudio", `Renderizando vídeo em nuvem com difusão contínua (MiniMax H3 Turbo / Wan 2.1)...`);
+        const jsonStr = await curlPostJson(`${host}/api/video/minimax-h3`, payload, 180);
+        const parsed = JSON.parse(jsonStr || "{}");
+        if (parsed.video_b64) {
+            const buf = Buffer.from(parsed.video_b64, "base64");
+            if (buf.length > 50000) {
+                logger.success("AiStudio", `Vídeo de difusão gerado na nuvem com sucesso! Tamanho: ${buf.length} bytes`);
+                return buf;
+            }
+        }
+    } catch (err: any) {
+        logger.warn("AiStudio", `Vídeo de difusão na nuvem falhou (${err?.message?.slice(0, 100)})`);
+    }
+    return null;
+}
+
 // GET: Serve media file (?file=...) OR List generated media & check API Key status
 export async function GET(
     request: NextRequest,
@@ -865,61 +899,79 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             let videoBuffer: Buffer | null = null;
             let usedModel = requestedModel;
 
-            try {
-                const veoModel = requestedModel.startsWith("veo-") ? requestedModel : "veo-2.0-generate-001";
-                logger.info("AiStudio", `Enviando solicitação de vídeo cinematográfico ao Google Veo (${veoModel})...`);
-                let operation = await ai.models.generateVideos({
-                    model: veoModel,
-                    source: {
-                        prompt: fullPrompt,
-                        ...(imageInput ? { image: imageInput } : {}),
-                    },
-                    config: {
-                        numberOfVideos: 1,
-                        aspectRatio,
-                    },
-                });
+            // 1. Tentar Google Veo (se solicitado)
+            if (requestedModel.startsWith("veo-")) {
+                try {
+                    const veoModel = requestedModel;
+                    logger.info("AiStudio", `Enviando solicitação de vídeo cinematográfico ao Google Veo (${veoModel})...`);
+                    let operation = await ai.models.generateVideos({
+                        model: veoModel,
+                        source: {
+                            prompt: fullPrompt,
+                            ...(imageInput ? { image: imageInput } : {}),
+                        },
+                        config: {
+                            numberOfVideos: 1,
+                            aspectRatio,
+                        },
+                    });
 
-                const maxAttempts = 42;
-                let attempts = 0;
-                while (!operation.done && attempts < maxAttempts) {
-                    await new Promise((resolve) => setTimeout(resolve, 5000));
-                    operation = await ai.operations.getVideosOperation({ operation });
-                    attempts++;
-                }
+                    const maxAttempts = 42;
+                    let attempts = 0;
+                    while (!operation.done && attempts < maxAttempts) {
+                        await new Promise((resolve) => setTimeout(resolve, 5000));
+                        operation = await ai.operations.getVideosOperation({ operation });
+                        attempts++;
+                    }
 
-                if (operation.done && !operation.error) {
-                    const videoObj = operation.response?.generatedVideos?.[0]?.video;
-                    const videoUri = videoObj?.uri;
-                    const inlineVideoBytes = (videoObj as any)?.videoBytes;
+                    if (operation.done && !operation.error) {
+                        const videoObj = operation.response?.generatedVideos?.[0]?.video;
+                        const videoUri = videoObj?.uri;
+                        const inlineVideoBytes = (videoObj as any)?.videoBytes;
 
-                    if (inlineVideoBytes) {
-                        videoBuffer = Buffer.from(inlineVideoBytes, "base64");
-                    } else if (videoUri) {
-                        const separator = videoUri.includes("?") ? "&" : "?";
-                        const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
-                        const videoRes = await fetch(downloadUrl, {
-                            headers: { "x-goog-api-key": apiKey },
-                        });
-                        if (videoRes.ok) {
-                            videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+                        if (inlineVideoBytes) {
+                            videoBuffer = Buffer.from(inlineVideoBytes, "base64");
+                        } else if (videoUri) {
+                            const separator = videoUri.includes("?") ? "&" : "?";
+                            const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
+                            const videoRes = await fetch(downloadUrl, {
+                                headers: { "x-goog-api-key": apiKey },
+                            });
+                            if (videoRes.ok) {
+                                videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+                            }
                         }
                     }
+                } catch (err: any) {
+                    logger.warn("AiStudio", `Google Veo (${requestedModel}) indisponível (${err?.message?.slice(0, 100)}), acionando IA Video Diffusion na nuvem...`);
                 }
-            } catch (err: any) {
-                logger.warn("AiStudio", `Modelo de vídeo ${requestedModel} indisponível (${err?.message?.slice(0, 100)}), usando Motor Multi-Cena Dinâmico + Voz Neural PT-BR...`);
             }
 
-            // Se o Veo gerou vídeo sem áudio e temos locução PT-BR, mixar a locução no vídeo do Veo
+            // 2. Se Veo não foi solicitado ou não gerou buffer, usar IA Video Diffusion na Nuvem (MiniMax H3 / Wan 2.1 Fast com Movimento Humano Real)
+            if (!videoBuffer && requestedModel !== "cinematic-multiscene") {
+                const englishPrompt = await buildEnglishVisualPromptWithGemini(
+                    apiKey,
+                    prompt,
+                    stylePreset,
+                    referenceImageBase64,
+                    referenceImageMimeType
+                );
+                videoBuffer = await generateCloudDiffusionVideo(englishPrompt, aspectRatio, imageInput?.imageBytes);
+                if (videoBuffer) {
+                    usedModel = "minimax-h3-turbo";
+                }
+            }
+
+            // Se o vídeo foi gerado (seja pelo Veo ou pela Difusão em Nuvem) e temos locução PT-BR, mixar com FFmpeg
             if (videoBuffer && hasSpeechAudio) {
-                const veoRawPath = path.join(dir, `${tempId}_veo_raw.mp4`);
-                const veoMuxPath = path.join(dir, `${tempId}_veo_mux.mp4`);
+                const rawPath = path.join(dir, `${tempId}_raw.mp4`);
+                const muxPath = path.join(dir, `${tempId}_mux.mp4`);
                 try {
-                    await fs.writeFile(veoRawPath, videoBuffer);
+                    await fs.writeFile(rawPath, videoBuffer);
                     await execFileAsync("ffmpeg", [
                         "-y",
                         "-i",
-                        veoRawPath,
+                        rawPath,
                         "-i",
                         tempSpeechPath,
                         "-c:v",
@@ -931,12 +983,14 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         "-shortest",
                         "-movflags",
                         "+faststart",
-                        veoMuxPath,
+                        muxPath,
                     ]);
-                    videoBuffer = await fs.readFile(veoMuxPath);
-                } catch {} finally {
-                    await fs.unlink(veoRawPath).catch(() => {});
-                    await fs.unlink(veoMuxPath).catch(() => {});
+                    videoBuffer = await fs.readFile(muxPath);
+                } catch (muxErr: any) {
+                    logger.warn("AiStudio", `Falha ao mixar áudio no vídeo (${muxErr?.message?.slice(0, 80)})`);
+                } finally {
+                    await fs.unlink(rawPath).catch(() => {});
+                    await fs.unlink(muxPath).catch(() => {});
                 }
             }
 
