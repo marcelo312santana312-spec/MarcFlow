@@ -6,9 +6,9 @@
   "private": false,
   "license": "MIT",
   "scripts": {
-    "dev": "NODE_OPTIONS=\"--max-old-space-size=1536\" npx tsx src/server/index.ts",
-    "build": "NODE_OPTIONS=\"--max-old-space-size=1536\" next build",
-    "start": "NODE_ENV=production NODE_OPTIONS=\"--max-old-space-size=1536\" npx tsx src/server/index.ts",
+    "dev": "NODE_OPTIONS=\"--max-old-space-size=1024\" node --max-old-space-size=1024 ./node_modules/.bin/tsx src/server/index.ts",
+    "build": "NODE_OPTIONS=\"--max-old-space-size=1024\" next build",
+    "start": "NODE_ENV=production NODE_OPTIONS=\"--max-old-space-size=1024\" node --max-old-space-size=1024 ./node_modules/.bin/tsx src/server/index.ts",
     "lint": "eslint",
     "db:push": "prisma db push && prisma generate",
     "db:studio": "prisma studio",
