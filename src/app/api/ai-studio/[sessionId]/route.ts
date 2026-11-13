@@ -461,29 +461,31 @@ async function fetchBlackForestFluxUltraHd(
     throw new Error("Os servidores de renderização fotográfica FLUX estão temporariamente ocupados. Tente novamente em alguns instantes.");
 }
 
-// 4. Motor de Difusão de Vídeo Real em Nuvem (Pika H3 Flex 8-10s 10-Steps + Fallback MiniMax H3 - Zero Carga no Celular)
+// 4. Motor de Difusão de Vídeo Real em Nuvem (Pika H3 Flex 8-10s 14-Steps HD + Fallback MiniMax H3 - Zero Carga no Celular)
 async function generateCloudDiffusionVideo(
     prompt: string,
     aspectRatio: "9:16" | "16:9",
     imageBytesBase64?: string | null,
-    durationSec = 8
+    durationSec = 8,
+    spokenScript = ""
 ): Promise<Buffer | null> {
     const host = "https://bep40-ml-intern-flux3-comic.hf.space";
-    const canvas = aspectRatio === "9:16" ? "544x960 · 9:16 fast" : "960x544 · 16:9 fast";
+    const canvas = aspectRatio === "9:16" ? "640x1152 9:16" : "1152x640 16:9";
     const targetDuration = Math.min(10, Math.max(8, Math.round(durationSec)));
-    const fluidPrompt = `smooth continuous fluid cinematic motion, natural lively human gestures and camera movement, high frame rate, ${prompt}`;
+    const speechTag = spokenScript ? ` <d>[Portuguese] ${spokenScript}</d>` : "";
+    const fluidPrompt = `photorealistic 4k DSLR cinematic video, crisp sharp focus, smooth continuous fluid motion, natural lively human gestures and expressions, ${prompt}.${speechTag}`;
     const cleanImg = imageBytesBase64 ? imageBytesBase64.replace(/^data:[^;]+;base64,/, "") : undefined;
 
-    // 1. Tentar Pika H3 Flex (8 a 10 segundos contínuos, 10 steps para alta fluidez)
+    // 1. Tentar Pika H3 Flex HD (640x1152 / 1152x640, 8 a 10 segundos contínuos, 14 steps para alta nitidez e fluidez)
     try {
-        logger.info("AiStudio", `Renderizando vídeo fluido na nuvem (Pika H3 Flex, ${targetDuration}s, 10 steps)...`);
+        logger.info("AiStudio", `Renderizando vídeo HD fluido na nuvem (Pika H3 Flex, ${canvas}, ${targetDuration}s, 14 steps)...`);
         const pikaPayload: any = {
             prompt: fluidPrompt,
             duration: targetDuration,
-            steps: 10,
+            steps: 14,
             mode: "single",
             lora: "off",
-            with_audio: true,
+            with_audio: !spokenScript,
             canvas,
             ...(cleanImg ? { image_b64: cleanImg } : {}),
         };
@@ -492,7 +494,7 @@ async function generateCloudDiffusionVideo(
         if (parsed.video_b64) {
             const buf = Buffer.from(parsed.video_b64, "base64");
             if (buf.length > 50000) {
-                logger.success("AiStudio", `Vídeo Pika H3 Flex (${targetDuration}s) gerado na nuvem! Tamanho: ${buf.length} bytes`);
+                logger.success("AiStudio", `Vídeo Pika H3 Flex HD (${targetDuration}s) gerado na nuvem! Tamanho: ${buf.length} bytes`);
                 return buf;
             }
         }
@@ -500,12 +502,12 @@ async function generateCloudDiffusionVideo(
         logger.warn("AiStudio", `Pika H3 Flex falhou (${err?.message?.slice(0, 100)}), tentando MiniMax H3 Turbo...`);
     }
 
-    // 2. Fallback para MiniMax H3 Turbo (8 steps, até 8s)
+    // 2. Fallback para MiniMax H3 Turbo (10 steps, até 8s)
     try {
         const h3Payload: any = {
             prompt: fluidPrompt,
             duration: Math.min(8, targetDuration),
-            steps: 8,
+            steps: 10,
             canvas,
             ...(cleanImg ? { image_b64: cleanImg } : {}),
         };
@@ -985,13 +987,19 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     referenceImageBase64,
                     referenceImageMimeType
                 );
-                videoBuffer = await generateCloudDiffusionVideo(englishPrompt, aspectRatio, imageInput?.imageBytes, totalDur);
+                videoBuffer = await generateCloudDiffusionVideo(
+                    englishPrompt,
+                    aspectRatio,
+                    imageInput?.imageBytes,
+                    totalDur,
+                    hasSpeechAudio ? spokenScript : ""
+                );
                 if (videoBuffer) {
                     usedModel = "pika-h3-flex";
                 }
             }
 
-            // Se o vídeo foi gerado (seja pelo Veo ou pela Difusão em Nuvem) e temos locução PT-BR, mixar com FFmpeg
+            // Se o vídeo foi gerado (seja pelo Veo ou pela Difusão em Nuvem) e temos locução PT-BR, substituir o áudio pelo nosso PT-BR
             if (videoBuffer && hasSpeechAudio) {
                 const rawPath = path.join(dir, `${tempId}_raw.mp4`);
                 const muxPath = path.join(dir, `${tempId}_mux.mp4`);
@@ -1003,18 +1011,25 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         rawPath,
                         "-i",
                         tempSpeechPath,
+                        "-map",
+                        "0:v:0",
+                        "-map",
+                        "1:a:0",
                         "-c:v",
                         "copy",
                         "-c:a",
                         "aac",
                         "-b:a",
-                        "128k",
+                        "192k",
+                        "-af",
+                        "apad",
                         "-shortest",
                         "-movflags",
                         "+faststart",
                         muxPath,
                     ]);
                     videoBuffer = await fs.readFile(muxPath);
+                    logger.success("AiStudio", "Locução em Português (PT-BR) aplicada com sucesso no vídeo!");
                 } catch (muxErr: any) {
                     logger.warn("AiStudio", `Falha ao mixar áudio no vídeo (${muxErr?.message?.slice(0, 80)})`);
                 } finally {
