@@ -528,6 +528,109 @@ async function fetchBlackForestFluxUltraHd(
     throw new Error("Os servidores de renderização fotográfica FLUX estão temporariamente ocupados. Tente novamente em alguns instantes.");
 }
 
+type ProviderHealth = {
+    id: string;
+    name: string;
+    category: "video" | "image" | "voice";
+    status: "online" | "limited" | "exhausted" | "offline";
+    detail: string;
+    updatedAt: number;
+};
+
+const providerQuotaCache: Record<string, { status: "online" | "limited" | "exhausted" | "offline"; detail: string; updatedAt: number }> = {};
+
+function recordProviderStatus(id: string, status: "online" | "limited" | "exhausted" | "offline", detail: string) {
+    providerQuotaCache[id] = { status, detail, updatedAt: Date.now() };
+}
+
+async function pingUrlQuick(url: string, timeoutSec = 4): Promise<boolean> {
+    try {
+        await execFileAsync("curl", ["-4", "-fsSL", "--max-time", String(timeoutSec), url], { encoding: "utf8" });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function checkAllProvidersHealth(apiKey: string | null): Promise<ProviderHealth[]> {
+    const now = Date.now();
+    const isFresh = (id: string, ttlMs = 20 * 60 * 1000) => {
+        const entry = providerQuotaCache[id];
+        return entry && now - entry.updatedAt < ttlMs ? entry : null;
+    };
+
+    const [pikaUp, ltxUp, edgeUp, geminiCheck] = await Promise.all([
+        pingUrlQuick("https://bep40-ml-intern-flux3-comic.hf.space/api/config", 4),
+        pingUrlQuick("https://lightricks-ltx-video-distilled.hf.space/gradio_api/info", 4),
+        pingUrlQuick("https://innoai-edge-tts-text-to-speech.hf.space/gradio_api/info", 4),
+        (async () => {
+            if (!apiKey) return { ok: false, reason: "Chave GEMINI_API_KEY não configurada" };
+            try {
+                const { stdout } = await execFileAsync(
+                    "curl",
+                    ["-4", "-sS", "--max-time", "5", `https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-fast-generate-001?key=${encodeURIComponent(apiKey)}`],
+                    { encoding: "utf8" }
+                );
+                const j = JSON.parse(stdout || "{}");
+                if (j?.name) return { ok: true, reason: "Chave ativa com acesso ao Veo 3.0" };
+                if (j?.error?.code === 402 || j?.error?.code === 403) {
+                    return { ok: false, reason: j?.error?.message?.slice(0, 70) || "Sem faturamento/créditos" };
+                }
+                return { ok: true, reason: "Chave Gemini conectada" };
+            } catch {
+                return { ok: false, reason: "Sem conexão com Google AI" };
+            }
+        })(),
+    ]);
+
+    const veoCached = isFresh("google-veo");
+    const pikaCached = isFresh("pika-h3");
+    const ltxCached = isFresh("ltx-video");
+
+    return [
+        {
+            id: "google-veo",
+            name: "Google Veo 3.0 / 2.0",
+            category: "video",
+            status: veoCached ? veoCached.status : geminiCheck.ok ? "online" : "exhausted",
+            detail: veoCached ? veoCached.detail : geminiCheck.reason,
+            updatedAt: veoCached?.updatedAt || now,
+        },
+        {
+            id: "pika-h3",
+            name: "Pika H3 / MiniMax (Grátis)",
+            category: "video",
+            status: pikaCached ? pikaCached.status : pikaUp ? "online" : "offline",
+            detail: pikaCached ? pikaCached.detail : pikaUp ? "Conectado (cota diária livre)" : "Servidor fora do ar",
+            updatedAt: pikaCached?.updatedAt || now,
+        },
+        {
+            id: "ltx-video",
+            name: "LTX-Video Nuvem (Grátis)",
+            category: "video",
+            status: ltxCached ? ltxCached.status : ltxUp ? "online" : "offline",
+            detail: ltxCached ? ltxCached.detail : ltxUp ? "Conectado (~20s por vídeo)" : "Servidor fora do ar",
+            updatedAt: ltxCached?.updatedAt || now,
+        },
+        {
+            id: "flux-image",
+            name: "FLUX.1 Ultra HD (Imagens)",
+            category: "image",
+            status: pikaUp || geminiCheck.ok ? "online" : "offline",
+            detail: pikaUp ? "Servidor dedicado conectado" : geminiCheck.ok ? "Via Google Gemini" : "Offline",
+            updatedAt: now,
+        },
+        {
+            id: "human-voice",
+            name: "Voz Humana Neural PT-BR",
+            category: "voice",
+            status: geminiCheck.ok || edgeUp ? "online" : "offline",
+            detail: geminiCheck.ok ? "Gemini Studio + Edge Neural ativos" : edgeUp ? "Edge Neural PT-BR ativo" : "Offline",
+            updatedAt: now,
+        },
+    ];
+}
+
 // 4. Motor de Difusão de Vídeo Real em Nuvem (Pika H3 Flex 8-10s 14-Steps HD + Fallback MiniMax H3 - Zero Carga no Celular)
 async function generateCloudDiffusionVideo(
     prompt: string,
@@ -561,12 +664,20 @@ async function generateCloudDiffusionVideo(
         if (parsed.video_b64) {
             const buf = Buffer.from(parsed.video_b64, "base64");
             if (buf.length > 50000) {
+                recordProviderStatus("pika-h3", "online", "Gerando normalmente");
                 logger.success("AiStudio", `Vídeo Pika H3 Flex HD (${targetDuration}s) gerado na nuvem! Tamanho: ${buf.length} bytes`);
                 return buf;
             }
         }
+        if (parsed.detail && /quota|exceeded|limit|credit/i.test(String(parsed.detail))) {
+            recordProviderStatus("pika-h3", "exhausted", "Cota diária ZeroGPU esgotada");
+        }
     } catch (err: any) {
-        logger.warn("AiStudio", `Pika H3 Flex falhou (${err?.message?.slice(0, 100)}), tentando MiniMax H3 Turbo...`);
+        const msg = String(err?.message || "");
+        if (/quota|exceeded|402|429/i.test(msg)) {
+            recordProviderStatus("pika-h3", "exhausted", "Cota diária ZeroGPU esgotada");
+        }
+        logger.warn("AiStudio", `Pika H3 Flex falhou (${msg.slice(0, 100)}), tentando LTX-Video...`);
     }
 
     // 2. Provedor 2: Lightricks LTX-Video Distilled (Suporta Image-to-Video e Text-to-Video, 7-8s em ~19s, cota independente)
@@ -637,10 +748,13 @@ async function generateCloudDiffusionVideo(
                         { encoding: "buffer", maxBuffer: 40 * 1024 * 1024 }
                     );
                     if (vidBuf && vidBuf.length > 50000) {
+                        recordProviderStatus("ltx-video", "online", "Gerando normalmente (~20s)");
                         logger.success("AiStudio", `Vídeo Lightricks LTX-Video (${ltxDur}s) gerado na nuvem! Tamanho: ${vidBuf.length} bytes`);
                         return vidBuf;
                     }
                 }
+            } else if (sseOut.includes("event: error")) {
+                recordProviderStatus("ltx-video", "exhausted", "Cota gratuita de IP esgotada hoje (tente 4G)");
             }
         }
     } catch (ltxErr: any) {
@@ -722,6 +836,12 @@ export async function GET(
         }
 
         const { apiKey } = await resolveGeminiApiKey(sessionId);
+
+        if (request.nextUrl.searchParams.get("status") === "providers") {
+            const providers = await checkAllProvidersHealth(apiKey);
+            return NextResponse.json({ status: true, data: { providers } });
+        }
+
         const items = await readGalleryIndex(sessionId);
 
         const maskedApiKey = apiKey
@@ -1100,6 +1220,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         const inlineVideoBytes = (videoObj as any)?.videoBytes;
 
                         if (inlineVideoBytes) {
+                            recordProviderStatus("google-veo", "online", "Gerando normalmente via Google Veo");
                             return Buffer.from(inlineVideoBytes, "base64");
                         } else if (videoUri) {
                             const separator = videoUri.includes("?") ? "&" : "?";
@@ -1108,12 +1229,17 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                                 headers: { "x-goog-api-key": apiKey },
                             });
                             if (videoRes.ok) {
+                                recordProviderStatus("google-veo", "online", "Gerando normalmente via Google Veo");
                                 return Buffer.from(await videoRes.arrayBuffer());
                             }
                         }
                     }
                 } catch (err: any) {
-                    logger.warn("AiStudio", `Google Veo (${veoModel}) indisponível (${err?.message?.slice(0, 120)})`);
+                    const msg = String(err?.message || "");
+                    if (/402|403|billing|credit|depleted|quota/i.test(msg)) {
+                        recordProviderStatus("google-veo", "exhausted", msg.slice(0, 80));
+                    }
+                    logger.warn("AiStudio", `Google Veo (${veoModel}) indisponível (${msg.slice(0, 120)})`);
                 }
                 return null;
             };

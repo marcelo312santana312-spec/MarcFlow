@@ -155,6 +155,13 @@ export default function AiStudioPage() {
     const [contacts, setContacts] = useState<ContactItem[]>([]);
     const [recentAffiliates, setRecentAffiliates] = useState<AffiliateQuickItem[]>([]);
 
+    // Live AI Servers Status Pill
+    const [providers, setProviders] = useState<
+        { id: string; name: string; category: string; status: "online" | "limited" | "exhausted" | "offline"; detail: string }[]
+    >([]);
+    const [loadingProviders, setLoadingProviders] = useState(false);
+    const [providersOpen, setProvidersOpen] = useState(false);
+
     useEffect(() => {
         if (!selectedSession) {
             setLoadingGallery(false);
@@ -162,7 +169,22 @@ export default function AiStudioPage() {
         }
         fetchStudioData(selectedSession);
         fetchTargetsAndAffiliates(selectedSession);
+        fetchProviderStatus(selectedSession);
     }, [selectedSession]);
+
+    const fetchProviderStatus = async (sessionId: string) => {
+        setLoadingProviders(true);
+        try {
+            const res = await fetch(`/api/ai-studio/${sessionId}?status=providers`);
+            const json = await res.json();
+            if (json.status && json.data?.providers) {
+                setProviders(json.data.providers);
+            }
+        } catch {
+        } finally {
+            setLoadingProviders(false);
+        }
+    };
 
     const fetchStudioData = async (sessionId: string) => {
         setLoadingGallery(true);
@@ -368,6 +390,7 @@ export default function AiStudioPage() {
             toast.error(err?.message || "Erro ao gerar mídia.");
         } finally {
             setGenerating(false);
+            if (selectedSession) fetchProviderStatus(selectedSession);
         }
     };
 
@@ -721,10 +744,11 @@ export default function AiStudioPage() {
                                         onChange={(e) => setVideoModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="minimax-h3-turbo">⚡ IA Video Diffusion Nuvem (Movimento Real de Pessoas & Cenário)</option>
+                                        <option value="minimax-h3-turbo">⚡ Automático (Nuvem Grátis + Google Veo)</option>
+                                        <option value="veo-3.0-fast-generate-001">🚀 Google Veo 3.0 Fast (Oficial / Créditos)</option>
+                                        <option value="veo-3.0-generate-001">🎬 Google Veo 3.0 Cinema Ultra-HD</option>
                                         <option value="veo-2.0-generate-001">🎬 Google Veo 2.0 (Vídeo Real Oficial)</option>
-                                        <option value="veo-3.0-generate-001">🚀 Google Veo 3.0 Cinema Ultra-HD</option>
-                                        <option value="cinematic-multiscene">🎞️ Cinematográfico Rápido (Transições & Trilha Sonora)</option>
+                                        <option value="cinematic-multiscene">🎞️ Cinematográfico Rápido (Transições & Trilha)</option>
                                     </select>
                                 )}
                                 <p className="text-[11px] text-muted-foreground">
@@ -1390,6 +1414,116 @@ export default function AiStudioPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            {/* Floating AI Servers Status Pill (Bottom-Right) */}
+            <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+                {providersOpen && (
+                    <Card className="w-80 max-w-[calc(100vw-2rem)] shadow-2xl border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 backdrop-blur">
+                        <CardHeader className="py-2.5 px-3 border-b flex flex-row items-center justify-between space-y-0">
+                            <div>
+                                <CardTitle className="text-xs font-bold flex items-center gap-1.5">
+                                    <Radio className="h-3.5 w-3.5 text-emerald-500" />
+                                    Status dos Motores de IA
+                                </CardTitle>
+                                <CardDescription className="text-[10px]">
+                                    Disponibilidade e créditos em tempo real
+                                </CardDescription>
+                            </div>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => selectedSession && fetchProviderStatus(selectedSession)}
+                                disabled={loadingProviders}
+                            >
+                                {loadingProviders ? <Loader2 className="h-3 w-3 animate-spin" /> : "Atualizar"}
+                            </Button>
+                        </CardHeader>
+                        <CardContent className="p-2.5 space-y-2 max-h-72 overflow-y-auto">
+                            {providers.length === 0 ? (
+                                <p className="text-[11px] text-muted-foreground text-center py-3">
+                                    {loadingProviders ? "Verificando servidores..." : "Selecione uma sessão para verificar."}
+                                </p>
+                            ) : (
+                                providers.map((p) => {
+                                    const dotClass =
+                                        p.status === "online"
+                                            ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"
+                                            : p.status === "limited"
+                                            ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]"
+                                            : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]";
+                                    const badgeText =
+                                        p.status === "online"
+                                            ? "Com Crédito / OK"
+                                            : p.status === "limited"
+                                            ? "Limitado"
+                                            : p.status === "exhausted"
+                                            ? "Sem Cota / Crédito"
+                                            : "Offline";
+
+                                    return (
+                                        <div
+                                            key={p.id}
+                                            className="flex items-start justify-between gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800"
+                                        >
+                                            <div className="flex items-start gap-2 min-w-0">
+                                                <span className={`mt-1 h-2.5 w-2.5 rounded-full shrink-0 ${dotClass}`} />
+                                                <div className="min-w-0">
+                                                    <div className="text-[11px] font-semibold truncate">{p.name}</div>
+                                                    <div className="text-[10px] text-muted-foreground leading-tight break-words">
+                                                        {p.detail}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <Badge
+                                                variant="outline"
+                                                className={`text-[9px] px-1.5 py-0 h-4 shrink-0 ${
+                                                    p.status === "online"
+                                                        ? "border-emerald-300 text-emerald-700 bg-emerald-50"
+                                                        : p.status === "limited"
+                                                        ? "border-amber-300 text-amber-700 bg-amber-50"
+                                                        : "border-red-300 text-red-700 bg-red-50"
+                                                }`}
+                                            >
+                                                {badgeText}
+                                            </Badge>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </CardContent>
+                    </Card>
+                )}
+
+                {(() => {
+                    const videoOnlineCount = providers.filter((p) => p.category === "video" && p.status === "online").length;
+                    const totalOnlineCount = providers.filter((p) => p.status === "online").length;
+                    const dotColor =
+                        providers.length === 0
+                            ? "bg-slate-400"
+                            : videoOnlineCount > 0
+                            ? "bg-emerald-500 animate-pulse"
+                            : totalOnlineCount > 0
+                            ? "bg-amber-500"
+                            : "bg-red-500";
+                    return (
+                        <button
+                            type="button"
+                            onClick={() => setProvidersOpen((v) => !v)}
+                            className="flex items-center gap-2 px-3 py-2 rounded-full bg-slate-900/90 dark:bg-slate-800/95 text-white shadow-lg border border-slate-700/80 hover:bg-slate-800 transition-all text-xs font-medium backdrop-blur"
+                        >
+                            <span className={`h-2.5 w-2.5 rounded-full ${dotColor}`} />
+                            <span>
+                                {providers.length === 0
+                                    ? "Motores IA"
+                                    : videoOnlineCount > 0
+                                    ? `Vídeo IA Ativo (${totalOnlineCount}/${providers.length})`
+                                    : `Sem Cota de Vídeo (${totalOnlineCount}/${providers.length})`}
+                            </span>
+                        </button>
+                    );
+                })()}
+            </div>
         </div>
     );
 }
