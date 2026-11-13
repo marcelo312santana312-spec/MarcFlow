@@ -216,7 +216,7 @@ async function curlPostJson(url: string, bodyObj: any, maxTimeSec = 45): Promise
     }
 }
 
-function fitSpeechToVideoDuration(rawText: string, maxChars = 115): string {
+function fitSpeechToVideoDuration(rawText: string, maxChars = 145): string {
     const clean = rawText
         .replace(/https?:\/\/\S+/g, "")
         .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
@@ -256,10 +256,60 @@ async function synthesizePortugueseVoiceover(
     outputMp3Path: string,
     apiKey?: string
 ): Promise<boolean> {
-    const cleanScript = fitSpeechToVideoDuration(rawScript, 125);
+    const cleanScript = fitSpeechToVideoDuration(rawScript, 145);
     if (!cleanScript || voiceId === "none") return false;
 
-    // 1. Motor Principal: Voz Neural Ultra-Humana PT-BR (Microsoft Edge Neural: Thalita, Francisca, Antonio)
+    // 1. Motor Principal: Google Gemini Native Studio TTS (Voz humana expressiva, calorosa e natural em PT-BR)
+    if (apiKey) {
+        try {
+            const geminiVoice = voiceId === "br_005" ? "Puck" : voiceId === "br_003" ? "Kore" : "Aoede";
+            const { primary: ttsAi } = createGenAIClients(apiKey);
+            const ttsRes = await ttsAi.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [
+                    {
+                        text: `Speak warmly, naturally and enthusiastically in Brazilian Portuguese: ${cleanScript}`,
+                    },
+                ],
+                config: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: geminiVoice },
+                        },
+                    },
+                } as any,
+            });
+            const inlineAudio = ttsRes?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data)?.inlineData;
+            if (inlineAudio?.data) {
+                const pcmPath = `${outputMp3Path}.pcm`;
+                await fs.writeFile(pcmPath, Buffer.from(inlineAudio.data, "base64"));
+                await execFileAsync("ffmpeg", [
+                    "-y",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    "-i",
+                    pcmPath,
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "192k",
+                    outputMp3Path,
+                ]);
+                await fs.unlink(pcmPath).catch(() => {});
+                logger.success("AiStudio", `Voz humana Gemini Studio (${geminiVoice}) sintetizada com sucesso!`);
+                return true;
+            }
+        } catch (gemErr: any) {
+            logger.warn("AiStudio", `Gemini Studio TTS falhou (${gemErr?.message?.slice(0, 80)}), usando Edge Neural PT-BR...`);
+        }
+    }
+
+    // 2. Fallback: Voz Neural Brasileira (Microsoft Edge Neural: Thalita, Francisca, Antonio)
     const edgeVoiceMap: Record<string, string> = {
         br_001: "pt-BR-ThalitaMultilingualNeural - pt-BR (Female)",
         br_003: "pt-BR-FranciscaNeural - pt-BR (Female)",
@@ -305,57 +355,7 @@ async function synthesizePortugueseVoiceover(
             }
         }
     } catch (edgeErr: any) {
-        logger.warn("AiStudio", `Edge Neural TTS indisponível (${edgeErr?.message?.slice(0, 80)}), tentando Gemini Studio TTS...`);
-    }
-
-    // 2. Fallback: Google Gemini Native Studio TTS (Voz humana expressiva via GEMINI_API_KEY)
-    if (apiKey) {
-        try {
-            const geminiVoice = voiceId === "br_005" ? "Puck" : voiceId === "br_003" ? "Kore" : "Aoede";
-            const { primary: ttsAi } = createGenAIClients(apiKey);
-            const ttsRes = await ttsAi.models.generateContent({
-                model: "gemini-2.5-flash-preview-tts",
-                contents: [
-                    {
-                        text: `Fale em português do Brasil com entonação natural, acolhedora e humana, sem ler instruções: ${cleanScript}`,
-                    },
-                ],
-                config: {
-                    responseModalities: ["AUDIO"],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: geminiVoice },
-                        },
-                    },
-                } as any,
-            });
-            const inlineAudio = ttsRes?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data)?.inlineData;
-            if (inlineAudio?.data) {
-                const pcmPath = `${outputMp3Path}.pcm`;
-                await fs.writeFile(pcmPath, Buffer.from(inlineAudio.data, "base64"));
-                await execFileAsync("ffmpeg", [
-                    "-y",
-                    "-f",
-                    "s16le",
-                    "-ar",
-                    "24000",
-                    "-ac",
-                    "1",
-                    "-i",
-                    pcmPath,
-                    "-c:a",
-                    "libmp3lame",
-                    "-b:a",
-                    "192k",
-                    outputMp3Path,
-                ]);
-                await fs.unlink(pcmPath).catch(() => {});
-                logger.success("AiStudio", `Voz humana Gemini Studio (${geminiVoice}) sintetizada com sucesso!`);
-                return true;
-            }
-        } catch (gemErr: any) {
-            logger.warn("AiStudio", `Gemini Studio TTS falhou (${gemErr?.message?.slice(0, 80)}), usando fallback PT-BR...`);
-        }
+        logger.warn("AiStudio", `Edge Neural TTS indisponível (${edgeErr?.message?.slice(0, 80)}), tentando fallback...`);
     }
 
     // 3. Último fallback: Google Translate TTS (pt-BR)
@@ -748,7 +748,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 {
   "enhancedPrompt": "Prompt fotográfico/cinematográfico hiper-realista em inglês (incluindo natural lifestyle movement, smiling warmly, expressive gestures, natural golden hour lighting, 8k DSLR)",
   "caption": "Legenda persuasiva em português pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)",
-  "speechText": "Frase curta, natural e persuasiva em português do Brasil com NO MÁXIMO 14 a 17 palavras (máximo 110 caracteres, 1 frase completa com ponto final, sem emojis nem links) para caber inteira e sem cortes em um vídeo de 8 segundos"
+  "speechText": "Fala natural, animada e persuasiva em português do Brasil com EXATAMENTE 16 a 20 palavras (entre 110 e 140 caracteres, frase completa com ponto final, sem emojis nem links) para preencher todo o vídeo de 8 segundos sem pausas"
 }`;
 
                 const rawText = await generateTextWithGeminiFallback(apiKey, rawPrompt, {
@@ -759,8 +759,8 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 const parsed = JSON.parse(rawText || "{}");
                 if (parsed.enhancedPrompt) {
                     const fittedSpeech = fitSpeechToVideoDuration(
-                        parsed.speechText || `Olha só essa novidade incrível! Garanta o seu hoje mesmo!`,
-                        115
+                        parsed.speechText || `Olha só que novidade incrível separamos para você hoje! Venha conferir e garanta já o seu!`,
+                        145
                     );
                     return NextResponse.json({
                         status: true,
@@ -957,17 +957,17 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 };
             }
 
-            // Determinar roteiro falado em Português ajustado exatamente ao tempo do vídeo (8-10s, sem cortar frase no meio)
-            let spokenScript = rawSpeechText ? fitSpeechToVideoDuration(rawSpeechText, 118) : "";
+            // Determinar roteiro falado em Português ajustado exatamente ao tempo do vídeo (7-8s, preenchendo todo o vídeo sem silêncio nem cortes)
+            let spokenScript = rawSpeechText ? fitSpeechToVideoDuration(rawSpeechText, 145) : "";
             if (!spokenScript && voiceId !== "none") {
-                const cleanCaption = fitSpeechToVideoDuration(caption, 115);
+                const cleanCaption = fitSpeechToVideoDuration(caption, 145);
                 if (cleanCaption && cleanCaption.length >= 12) {
                     spokenScript = cleanCaption;
                 } else {
                     const isAlreadyEnglish = /^RAW photo/i.test(prompt);
                     spokenScript = isAlreadyEnglish
-                        ? "Olha só essa novidade incrível! Aproveite hoje e garanta já o seu!"
-                        : fitSpeechToVideoDuration(`Olha só que incrível: ${prompt}. Aproveite hoje mesmo!`, 115);
+                        ? "Oi pessoal! Acabaram de chegar novidades incríveis com preços imperdíveis por aqui, venha conferir hoje mesmo!"
+                        : fitSpeechToVideoDuration(`Oi pessoal! Confira essa novidade incrível: ${prompt}. Venha aproveitar as ofertas especiais de hoje mesmo!`, 145);
                 }
             }
 
@@ -1084,14 +1084,20 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         spkDur = parseFloat(aOut.trim()) || 0;
                     } catch {}
 
-                    let audioFilter = "adelay=250|250,apad";
+                    let audioFilter = "adelay=200|200,apad";
+                    const extraArgs: string[] = [];
                     if (spkDur > 0 && vidDur > 1) {
-                        const available = Math.max(1, vidDur - 0.35);
+                        const available = Math.max(1, vidDur - 0.30);
                         if (spkDur > available) {
-                            const tempo = Math.min(1.35, Math.max(1.02, spkDur / available));
+                            const tempo = Math.min(1.22, Math.max(1.02, spkDur / available));
                             audioFilter = `atempo=${tempo.toFixed(3)},apad`;
-                        } else if (spkDur + 0.35 < vidDur) {
-                            audioFilter = "adelay=250|250,apad";
+                        } else if (vidDur - spkDur > 1.0) {
+                            // Evitar silêncio longo no final enquanto a pessoa ainda gesticula: alinhar o fim do vídeo ao término da fala
+                            const syncedDur = Math.max(4.5, Math.min(vidDur, spkDur + 0.50));
+                            audioFilter = "adelay=200|200,apad";
+                            extraArgs.push("-t", syncedDur.toFixed(2));
+                        } else if (spkDur + 0.30 < vidDur) {
+                            audioFilter = "adelay=200|200,apad";
                         } else {
                             audioFilter = "apad";
                         }
@@ -1115,6 +1121,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         "192k",
                         "-af",
                         audioFilter,
+                        ...extraArgs,
                         "-shortest",
                         "-movflags",
                         "+faststart",
