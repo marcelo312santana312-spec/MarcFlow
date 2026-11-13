@@ -1071,10 +1071,8 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             let videoBuffer: Buffer | null = null;
             let usedModel = requestedModel;
 
-            // 1. Tentar Google Veo (se solicitado)
-            if (requestedModel.startsWith("veo-")) {
+            const tryGoogleVeo = async (veoModel: string): Promise<Buffer | null> => {
                 try {
-                    const veoModel = requestedModel;
                     logger.info("AiStudio", `Enviando solicitação de vídeo cinematográfico ao Google Veo (${veoModel})...`);
                     let operation = await ai.models.generateVideos({
                         model: veoModel,
@@ -1102,7 +1100,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         const inlineVideoBytes = (videoObj as any)?.videoBytes;
 
                         if (inlineVideoBytes) {
-                            videoBuffer = Buffer.from(inlineVideoBytes, "base64");
+                            return Buffer.from(inlineVideoBytes, "base64");
                         } else if (videoUri) {
                             const separator = videoUri.includes("?") ? "&" : "?";
                             const downloadUrl = `${videoUri}${separator}key=${encodeURIComponent(apiKey)}`;
@@ -1110,16 +1108,23 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                                 headers: { "x-goog-api-key": apiKey },
                             });
                             if (videoRes.ok) {
-                                videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+                                return Buffer.from(await videoRes.arrayBuffer());
                             }
                         }
                     }
                 } catch (err: any) {
-                    logger.warn("AiStudio", `Google Veo (${requestedModel}) indisponível (${err?.message?.slice(0, 100)}), acionando IA Video Diffusion na nuvem...`);
+                    logger.warn("AiStudio", `Google Veo (${veoModel}) indisponível (${err?.message?.slice(0, 120)})`);
                 }
+                return null;
+            };
+
+            // 1. Se usuário pediu Google Veo explicitamente, tentar Veo primeiro
+            if (requestedModel.startsWith("veo-")) {
+                videoBuffer = await tryGoogleVeo(requestedModel);
+                if (videoBuffer) usedModel = requestedModel;
             }
 
-            // 2. Se Veo não foi solicitado ou não gerou buffer, usar IA Video Diffusion na Nuvem (MiniMax H3 / Wan 2.1 Fast com Movimento Humano Real)
+            // 2. Tentar IA Video Diffusion na Nuvem (Pika H3 -> LTX-Video -> MiniMax H3)
             if (!videoBuffer && requestedModel !== "cinematic-multiscene") {
                 const englishPrompt = await buildEnglishVisualPromptWithGemini(
                     apiKey,
@@ -1136,7 +1141,19 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     hasSpeechAudio ? spokenScript : ""
                 );
                 if (videoBuffer) {
-                    usedModel = "pika-h3-flex";
+                    usedModel = "cloud-video-diffusion";
+                }
+            }
+
+            // 3. Se os servidores gratuitos atingiram cota diária (ZeroGPU), acionar Google Veo Oficial automaticamente via chave GEMINI_API_KEY
+            if (!videoBuffer && requestedModel !== "cinematic-multiscene" && !requestedModel.startsWith("veo-")) {
+                logger.info("AiStudio", "Servidores gratuitos atingiram cota de GPU, acionando Google Veo Oficial via sua chave Gemini...");
+                for (const veoCandidate of ["veo-3.0-fast-generate-001", "veo-2.0-generate-001"]) {
+                    videoBuffer = await tryGoogleVeo(veoCandidate);
+                    if (videoBuffer) {
+                        usedModel = veoCandidate;
+                        break;
+                    }
                 }
             }
 
