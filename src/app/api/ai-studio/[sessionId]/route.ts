@@ -216,98 +216,165 @@ async function curlPostJson(url: string, bodyObj: any, maxTimeSec = 45): Promise
     }
 }
 
-async function synthesizePortugueseVoiceover(
-    rawScript: string,
-    voiceId: string,
-    outputMp3Path: string
-): Promise<boolean> {
-    const cleanScript = rawScript
+function fitSpeechToVideoDuration(rawText: string, maxChars = 115): string {
+    const clean = rawText
         .replace(/https?:\/\/\S+/g, "")
+        .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
         .replace(/[*_~`#]/g, "")
         .replace(/\s+/g, " ")
         .trim();
 
-    if (!cleanScript || voiceId === "none") return false;
+    if (!clean || clean.length <= maxChars) return clean;
 
-    const sentences = cleanScript
+    const sentences = clean
         .split(/(?<=[.!?])\s+/)
         .map((s) => s.trim())
         .filter(Boolean);
 
-    const chunks: string[] = [];
-    let current = "";
+    let result = "";
     for (const s of sentences) {
-        if ((current + " " + s).trim().length <= 180) {
-            current = (current + " " + s).trim();
+        if ((result + " " + s).trim().length <= maxChars) {
+            result = (result + " " + s).trim();
         } else {
-            if (current) chunks.push(current);
-            if (s.length <= 180) {
-                current = s;
-            } else {
-                const words = s.split(" ");
-                let sub = "";
-                for (const w of words) {
-                    if ((sub + " " + w).trim().length <= 180) {
-                        sub = (sub + " " + w).trim();
-                    } else {
-                        if (sub) chunks.push(sub);
-                        sub = w;
+            break;
+        }
+    }
+    if (result) return result;
+
+    // Se a primeira frase já excede maxChars, cortar no último espaço ou vírgula antes do limite e fechar pontuação
+    const slice = clean.slice(0, maxChars - 1);
+    const lastComma = slice.lastIndexOf(",");
+    const lastSpace = slice.lastIndexOf(" ");
+    const cutIdx = lastComma > maxChars * 0.55 ? lastComma : lastSpace > 20 ? lastSpace : slice.length;
+    const trimmed = slice.slice(0, cutIdx).replace(/[,:;\s]+$/, "");
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}!`;
+}
+
+async function synthesizePortugueseVoiceover(
+    rawScript: string,
+    voiceId: string,
+    outputMp3Path: string,
+    apiKey?: string
+): Promise<boolean> {
+    const cleanScript = fitSpeechToVideoDuration(rawScript, 125);
+    if (!cleanScript || voiceId === "none") return false;
+
+    // 1. Motor Principal: Voz Neural Ultra-Humana PT-BR (Microsoft Edge Neural: Thalita, Francisca, Antonio)
+    const edgeVoiceMap: Record<string, string> = {
+        br_001: "pt-BR-ThalitaMultilingualNeural - pt-BR (Female)",
+        br_003: "pt-BR-FranciscaNeural - pt-BR (Female)",
+        br_005: "pt-BR-AntonioNeural - pt-BR (Male)",
+    };
+    const edgeVoice = edgeVoiceMap[voiceId] || edgeVoiceMap.br_001;
+
+    try {
+        const postOut = await curlPostJson(
+            "https://innoai-edge-tts-text-to-speech.hf.space/gradio_api/call/tts_interface",
+            { data: [cleanScript, edgeVoice, 0, 0] },
+            15
+        );
+        const parsedPost = JSON.parse(postOut || "{}");
+        if (parsedPost.event_id) {
+            const { stdout: sseOut } = await execFileAsync(
+                "curl",
+                [
+                    "-4",
+                    "-fsSL",
+                    "--max-time",
+                    "25",
+                    `https://innoai-edge-tts-text-to-speech.hf.space/gradio_api/call/tts_interface/${parsedPost.event_id}`,
+                ],
+                { encoding: "utf8" }
+            );
+            const match = sseOut.match(/data:\s*(\[[\s\S]*?\])\s*(?:\r?\n|$)/);
+            if (match) {
+                const eventData = JSON.parse(match[1]);
+                const audioUrl: string | undefined = eventData?.[0]?.url;
+                if (audioUrl) {
+                    const { stdout: audioBuf } = await execFileAsync(
+                        "curl",
+                        ["-4", "-fsSL", "--max-time", "20", audioUrl],
+                        { encoding: "buffer", maxBuffer: 15 * 1024 * 1024 }
+                    );
+                    if (audioBuf && audioBuf.length > 1000) {
+                        await fs.writeFile(outputMp3Path, audioBuf);
+                        logger.success("AiStudio", `Voz humana neural (${edgeVoice.split(" - ")[0]}) sintetizada com sucesso!`);
+                        return true;
                     }
                 }
-                current = sub;
             }
         }
+    } catch (edgeErr: any) {
+        logger.warn("AiStudio", `Edge Neural TTS indisponível (${edgeErr?.message?.slice(0, 80)}), tentando Gemini Studio TTS...`);
     }
-    if (current) chunks.push(current);
-    if (chunks.length === 0) chunks.push(cleanScript.slice(0, 180));
 
-    const audioBuffers: Buffer[] = [];
-    const selectedVoice = ["br_001", "br_003", "br_005"].includes(voiceId) ? voiceId : "br_001";
-
-    for (const chunk of chunks) {
-        let chunkBuf: Buffer | null = null;
-
-        // 1. Voz Neural Brasileira (TikTok Neural TTS: br_001 Feminina, br_003 Jovem, br_005 Masculina)
+    // 2. Fallback: Google Gemini Native Studio TTS (Voz humana expressiva via GEMINI_API_KEY)
+    if (apiKey) {
         try {
-            const ttOut = await curlPostJson(
-                "https://tiktok-tts.weilnet.workers.dev/api/generation",
-                { text: chunk, voice: selectedVoice },
-                12
-            );
-            const parsed = JSON.parse(ttOut || "{}");
-            if (parsed.data) {
-                const buf = Buffer.from(parsed.data, "base64");
-                if (buf.length > 500) chunkBuf = buf;
+            const geminiVoice = voiceId === "br_005" ? "Puck" : voiceId === "br_003" ? "Kore" : "Aoede";
+            const { primary: ttsAi } = createGenAIClients(apiKey);
+            const ttsRes = await ttsAi.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [
+                    {
+                        text: `Fale em português do Brasil com entonação natural, acolhedora e humana, sem ler instruções: ${cleanScript}`,
+                    },
+                ],
+                config: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: geminiVoice },
+                        },
+                    },
+                } as any,
+            });
+            const inlineAudio = ttsRes?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data)?.inlineData;
+            if (inlineAudio?.data) {
+                const pcmPath = `${outputMp3Path}.pcm`;
+                await fs.writeFile(pcmPath, Buffer.from(inlineAudio.data, "base64"));
+                await execFileAsync("ffmpeg", [
+                    "-y",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    "-i",
+                    pcmPath,
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "192k",
+                    outputMp3Path,
+                ]);
+                await fs.unlink(pcmPath).catch(() => {});
+                logger.success("AiStudio", `Voz humana Gemini Studio (${geminiVoice}) sintetizada com sucesso!`);
+                return true;
             }
-        } catch (err: any) {
-            logger.warn("AiStudio", `TikTok Neural TTS falhou no trecho (${err?.message?.slice(0, 80)}), usando Google TTS PT-BR...`);
-        }
-
-        // 2. Fallback Google Translate TTS (pt-BR)
-        if (!chunkBuf) {
-            try {
-                const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=pt-BR&q=${encodeURIComponent(chunk)}`;
-                const { stdout } = await execFileAsync(
-                    "curl",
-                    ["-4", "-fsSL", "--max-time", "12", "-A", "Mozilla/5.0", gUrl],
-                    { encoding: "buffer", maxBuffer: 10 * 1024 * 1024 }
-                );
-                if (stdout && stdout.length > 500) {
-                    chunkBuf = stdout;
-                }
-            } catch (err2: any) {
-                logger.warn("AiStudio", `Google TTS PT-BR falhou (${err2?.message?.slice(0, 80)})`);
-            }
-        }
-
-        if (chunkBuf) {
-            audioBuffers.push(chunkBuf);
+        } catch (gemErr: any) {
+            logger.warn("AiStudio", `Gemini Studio TTS falhou (${gemErr?.message?.slice(0, 80)}), usando fallback PT-BR...`);
         }
     }
 
-    if (audioBuffers.length === 0) return false;
-    await fs.writeFile(outputMp3Path, Buffer.concat(audioBuffers));
-    return true;
+    // 3. Último fallback: Google Translate TTS (pt-BR)
+    try {
+        const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=pt-BR&q=${encodeURIComponent(cleanScript)}`;
+        const { stdout } = await execFileAsync(
+            "curl",
+            ["-4", "-fsSL", "--max-time", "12", "-A", "Mozilla/5.0", gUrl],
+            { encoding: "buffer", maxBuffer: 10 * 1024 * 1024 }
+        );
+        if (stdout && stdout.length > 500) {
+            await fs.writeFile(outputMp3Path, stdout);
+            return true;
+        }
+    } catch (err2: any) {
+        logger.warn("AiStudio", `Google TTS PT-BR falhou (${err2?.message?.slice(0, 80)})`);
+    }
+
+    return false;
 }
 
 
@@ -679,9 +746,9 @@ export async function POST(
 O usuário vai fornecer uma descrição curta para gerar um(a) ${mediaType}${stylePreset ? ` no estilo "${stylePreset}"` : ""}.
 Retorne APENAS um JSON válido (sem markdown) no formato:
 {
-  "enhancedPrompt": "Prompt fotográfico hiper-realista detalhado em inglês para máxima fidelidade no FLUX.1/Gemini (incluindo RAW photo, 85mm f/1.4 lens, natural golden hour lighting, photorealistic, ultra detailed skin and texture, 8k)",
+  "enhancedPrompt": "Prompt fotográfico/cinematográfico hiper-realista em inglês (incluindo natural lifestyle movement, smiling warmly, expressive gestures, natural golden hour lighting, 8k DSLR)",
   "caption": "Legenda persuasiva em português pronta para postar no Status/Grupo do WhatsApp com emojis e chamada para ação (CTA)",
-  "speechText": "Fala curta, natural e persuasiva em português do Brasil (1 a 2 frases, sem emojis nem links) para ser narrada por voz no vídeo comercial"
+  "speechText": "Frase curta, natural e persuasiva em português do Brasil com NO MÁXIMO 14 a 17 palavras (máximo 110 caracteres, 1 frase completa com ponto final, sem emojis nem links) para caber inteira e sem cortes em um vídeo de 8 segundos"
 }`;
 
                 const rawText = await generateTextWithGeminiFallback(apiKey, rawPrompt, {
@@ -691,14 +758,16 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
                 const parsed = JSON.parse(rawText || "{}");
                 if (parsed.enhancedPrompt) {
+                    const fittedSpeech = fitSpeechToVideoDuration(
+                        parsed.speechText || `Olha só essa novidade incrível! Garanta o seu hoje mesmo!`,
+                        115
+                    );
                     return NextResponse.json({
                         status: true,
                         data: {
                             enhancedPrompt: parsed.enhancedPrompt,
                             caption: parsed.caption || `✨ Confira essa novidade incrível! 🔥\n\n👉 Chame aqui ou clique no link para garantir!`,
-                            speechText:
-                                parsed.speechText ||
-                                `Olha só essa novidade incrível! ${rawPrompt}. Aproveite as condições especiais de hoje e garanta já o seu!`,
+                            speechText: fittedSpeech,
                         },
                     });
                 }
@@ -888,23 +957,17 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 };
             }
 
-            // Determinar roteiro falado em Português para a locução do vídeo
-            let spokenScript = rawSpeechText;
+            // Determinar roteiro falado em Português ajustado exatamente ao tempo do vídeo (8-10s, sem cortar frase no meio)
+            let spokenScript = rawSpeechText ? fitSpeechToVideoDuration(rawSpeechText, 118) : "";
             if (!spokenScript && voiceId !== "none") {
-                const cleanCaption = caption
-                    .replace(/https?:\/\/\S+/g, "")
-                    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
-                    .replace(/[*_~`#]/g, "")
-                    .replace(/\s+/g, " ")
-                    .trim();
-
+                const cleanCaption = fitSpeechToVideoDuration(caption, 115);
                 if (cleanCaption && cleanCaption.length >= 12) {
-                    spokenScript = cleanCaption.slice(0, 260);
+                    spokenScript = cleanCaption;
                 } else {
                     const isAlreadyEnglish = /^RAW photo/i.test(prompt);
                     spokenScript = isAlreadyEnglish
-                        ? "Olha só essa novidade exclusiva que preparamos para você hoje! Aproveite as condições especiais e garanta já!"
-                        : `Olha só que incrível: ${prompt.slice(0, 140)}! Aproveite a oportunidade exclusiva de hoje e garanta já!`;
+                        ? "Olha só essa novidade incrível! Aproveite hoje e garanta já o seu!"
+                        : fitSpeechToVideoDuration(`Olha só que incrível: ${prompt}. Aproveite hoje mesmo!`, 115);
                 }
             }
 
@@ -916,7 +979,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             if (voiceId !== "none" && spokenScript) {
                 try {
-                    hasSpeechAudio = await synthesizePortugueseVoiceover(spokenScript, voiceId, tempSpeechPath);
+                    hasSpeechAudio = await synthesizePortugueseVoiceover(spokenScript, voiceId, tempSpeechPath, apiKey);
                 } catch (ttsErr: any) {
                     logger.warn("AiStudio", `Falha ao sintetizar locução PT-BR (${ttsErr?.message?.slice(0, 80)})`);
                 }
@@ -999,12 +1062,41 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 }
             }
 
-            // Se o vídeo foi gerado (seja pelo Veo ou pela Difusão em Nuvem) e temos locução PT-BR, substituir o áudio pelo nosso PT-BR
+            // Se o vídeo foi gerado (seja pelo Veo ou pela Difusão em Nuvem) e temos locução PT-BR, sincronizar e substituir o áudio
             if (videoBuffer && hasSpeechAudio) {
                 const rawPath = path.join(dir, `${tempId}_raw.mp4`);
                 const muxPath = path.join(dir, `${tempId}_mux.mp4`);
                 try {
                     await fs.writeFile(rawPath, videoBuffer);
+
+                    // Medir durações exatas de vídeo e áudio para nunca cortar a frase no meio
+                    let vidDur = totalDur;
+                    let spkDur = 0;
+                    try {
+                        const { stdout: vOut } = await execFileAsync("ffprobe", [
+                            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", rawPath
+                        ], { encoding: "utf8" });
+                        vidDur = parseFloat(vOut.trim()) || totalDur;
+
+                        const { stdout: aOut } = await execFileAsync("ffprobe", [
+                            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tempSpeechPath
+                        ], { encoding: "utf8" });
+                        spkDur = parseFloat(aOut.trim()) || 0;
+                    } catch {}
+
+                    let audioFilter = "adelay=250|250,apad";
+                    if (spkDur > 0 && vidDur > 1) {
+                        const available = Math.max(1, vidDur - 0.35);
+                        if (spkDur > available) {
+                            const tempo = Math.min(1.35, Math.max(1.02, spkDur / available));
+                            audioFilter = `atempo=${tempo.toFixed(3)},apad`;
+                        } else if (spkDur + 0.35 < vidDur) {
+                            audioFilter = "adelay=250|250,apad";
+                        } else {
+                            audioFilter = "apad";
+                        }
+                    }
+
                     await execFileAsync("ffmpeg", [
                         "-y",
                         "-i",
@@ -1022,14 +1114,14 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                         "-b:a",
                         "192k",
                         "-af",
-                        "apad",
+                        audioFilter,
                         "-shortest",
                         "-movflags",
                         "+faststart",
                         muxPath,
                     ]);
                     videoBuffer = await fs.readFile(muxPath);
-                    logger.success("AiStudio", "Locução em Português (PT-BR) aplicada com sucesso no vídeo!");
+                    logger.success("AiStudio", `Locução humana PT-BR sincronizada (${spkDur.toFixed(1)}s em vídeo de ${vidDur.toFixed(1)}s)!`);
                 } catch (muxErr: any) {
                     logger.warn("AiStudio", `Falha ao mixar áudio no vídeo (${muxErr?.message?.slice(0, 80)})`);
                 } finally {
