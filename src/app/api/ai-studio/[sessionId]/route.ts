@@ -461,36 +461,65 @@ async function fetchBlackForestFluxUltraHd(
     throw new Error("Os servidores de renderização fotográfica FLUX estão temporariamente ocupados. Tente novamente em alguns instantes.");
 }
 
-// 4. Motor de Difusão de Vídeo Real em Nuvem (MiniMax H3 Turbo / Wan 2.1 Fast - Zero Carga no Celular)
+// 4. Motor de Difusão de Vídeo Real em Nuvem (Pika H3 Flex 8-10s 10-Steps + Fallback MiniMax H3 - Zero Carga no Celular)
 async function generateCloudDiffusionVideo(
     prompt: string,
     aspectRatio: "9:16" | "16:9",
-    imageBytesBase64?: string | null
+    imageBytesBase64?: string | null,
+    durationSec = 8
 ): Promise<Buffer | null> {
     const host = "https://bep40-ml-intern-flux3-comic.hf.space";
     const canvas = aspectRatio === "9:16" ? "544x960 · 9:16 fast" : "960x544 · 16:9 fast";
-    const payload: any = {
-        prompt,
-        duration: 4.0,
-        steps: 4,
-        canvas,
-    };
-    if (imageBytesBase64) {
-        payload.image = imageBytesBase64.replace(/^data:[^;]+;base64,/, "");
-    }
+    const targetDuration = Math.min(10, Math.max(8, Math.round(durationSec)));
+    const fluidPrompt = `smooth continuous fluid cinematic motion, natural lively human gestures and camera movement, high frame rate, ${prompt}`;
+    const cleanImg = imageBytesBase64 ? imageBytesBase64.replace(/^data:[^;]+;base64,/, "") : undefined;
+
+    // 1. Tentar Pika H3 Flex (8 a 10 segundos contínuos, 10 steps para alta fluidez)
     try {
-        logger.info("AiStudio", `Renderizando vídeo em nuvem com difusão contínua (MiniMax H3 Turbo / Wan 2.1)...`);
-        const jsonStr = await curlPostJson(`${host}/api/video/minimax-h3`, payload, 180);
+        logger.info("AiStudio", `Renderizando vídeo fluido na nuvem (Pika H3 Flex, ${targetDuration}s, 10 steps)...`);
+        const pikaPayload: any = {
+            prompt: fluidPrompt,
+            duration: targetDuration,
+            steps: 10,
+            mode: "single",
+            lora: "off",
+            with_audio: true,
+            canvas,
+            ...(cleanImg ? { image_b64: cleanImg } : {}),
+        };
+        const jsonStr = await curlPostJson(`${host}/api/video/minimax`, pikaPayload, 240);
         const parsed = JSON.parse(jsonStr || "{}");
         if (parsed.video_b64) {
             const buf = Buffer.from(parsed.video_b64, "base64");
             if (buf.length > 50000) {
-                logger.success("AiStudio", `Vídeo de difusão gerado na nuvem com sucesso! Tamanho: ${buf.length} bytes`);
+                logger.success("AiStudio", `Vídeo Pika H3 Flex (${targetDuration}s) gerado na nuvem! Tamanho: ${buf.length} bytes`);
                 return buf;
             }
         }
     } catch (err: any) {
-        logger.warn("AiStudio", `Vídeo de difusão na nuvem falhou (${err?.message?.slice(0, 100)})`);
+        logger.warn("AiStudio", `Pika H3 Flex falhou (${err?.message?.slice(0, 100)}), tentando MiniMax H3 Turbo...`);
+    }
+
+    // 2. Fallback para MiniMax H3 Turbo (8 steps, até 8s)
+    try {
+        const h3Payload: any = {
+            prompt: fluidPrompt,
+            duration: Math.min(8, targetDuration),
+            steps: 8,
+            canvas,
+            ...(cleanImg ? { image_b64: cleanImg } : {}),
+        };
+        const jsonStr = await curlPostJson(`${host}/api/video/minimax-h3`, h3Payload, 240);
+        const parsed = JSON.parse(jsonStr || "{}");
+        if (parsed.video_b64) {
+            const buf = Buffer.from(parsed.video_b64, "base64");
+            if (buf.length > 50000) {
+                logger.success("AiStudio", `Vídeo MiniMax H3 gerado na nuvem! Tamanho: ${buf.length} bytes`);
+                return buf;
+            }
+        }
+    } catch (err: any) {
+        logger.warn("AiStudio", `MiniMax H3 falhou (${err?.message?.slice(0, 100)})`);
     }
     return null;
 }
@@ -893,8 +922,8 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             const wordCount = spokenScript ? spokenScript.split(/\s+/).filter(Boolean).length : 0;
             const totalDur = hasSpeechAudio
-                ? Math.max(6, Math.min(14, Math.ceil(wordCount / 2.2) + 1.5))
-                : 6;
+                ? Math.max(8, Math.min(10, Math.ceil(wordCount / 2.2) + 1.5))
+                : 8;
 
             let videoBuffer: Buffer | null = null;
             let usedModel = requestedModel;
@@ -956,9 +985,9 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     referenceImageBase64,
                     referenceImageMimeType
                 );
-                videoBuffer = await generateCloudDiffusionVideo(englishPrompt, aspectRatio, imageInput?.imageBytes);
+                videoBuffer = await generateCloudDiffusionVideo(englishPrompt, aspectRatio, imageInput?.imageBytes, totalDur);
                 if (videoBuffer) {
-                    usedModel = "minimax-h3-turbo";
+                    usedModel = "pika-h3-flex";
                 }
             }
 
