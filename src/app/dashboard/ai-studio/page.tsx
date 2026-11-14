@@ -112,6 +112,10 @@ export default function AiStudioPage() {
     const [showKeyModal, setShowKeyModal] = useState(false);
     const [apiKeyInput, setApiKeyInput] = useState("");
     const [savingKey, setSavingKey] = useState(false);
+    const [colabUrl, setColabUrl] = useState("");
+    const [colabUrlInput, setColabUrlInput] = useState("");
+    const [showColabModal, setShowColabModal] = useState(false);
+    const [savingColab, setSavingColab] = useState(false);
 
     const [items, setItems] = useState<AiStudioMediaItem[]>([]);
     const [galleryFilter, setGalleryFilter] = useState<"ALL" | "image" | "video">("ALL");
@@ -194,6 +198,9 @@ export default function AiStudioPage() {
             if (json.status && json.data) {
                 setHasApiKey(Boolean(json.data.hasApiKey));
                 setMaskedApiKey(json.data.maskedApiKey || null);
+                const cUrl = json.data.colabUrl || "";
+                setColabUrl(cUrl);
+                setColabUrlInput(cUrl);
                 const list: AiStudioMediaItem[] = json.data.items || [];
                 setItems(list);
                 if (list.length > 0 && !activePreview) {
@@ -261,6 +268,113 @@ export default function AiStudioPage() {
             setSavingKey(false);
         }
     };
+
+    const handleSaveColabUrl = async () => {
+        if (!selectedSession) return;
+        setSavingColab(true);
+        try {
+            const res = await fetch(`/api/ai-studio/${selectedSession}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "save-colab-url",
+                    colabUrl: colabUrlInput.trim(),
+                }),
+            });
+            const json = await res.json();
+            if (json.status) {
+                const clean = colabUrlInput.trim().replace(/\/+$/, "");
+                setColabUrl(clean);
+                toast.success(json.message || "Colab GPU atualizado!");
+                setShowColabModal(false);
+                fetchProviderStatus(selectedSession);
+            } else {
+                toast.error(json.message || "Erro ao salvar URL do Colab");
+            }
+        } catch {
+            toast.error("Erro ao salvar URL do Colab.");
+        } finally {
+            setSavingColab(false);
+        }
+    };
+
+    const colabCellScript = `# === MARCFLOW COLAB GPU VIDEO SERVER (A100 / L4 / T4) ===
+!pip install -q -U diffusers transformers accelerate sentencepiece ftfy imageio[ffmpeg] fastapi uvicorn nest_asyncio
+!wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
+
+import os, io, re, time, base64, tempfile, threading, subprocess, torch
+from fastapi import FastAPI
+from fastapi.responses import Response
+from pydantic import BaseModel
+from PIL import Image
+from diffusers import AutoencoderKLWan, WanPipeline, WanImageToVideoPipeline
+from diffusers.utils import export_to_video
+import uvicorn, nest_asyncio
+
+gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+vram_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if torch.cuda.is_available() else 0
+print(f"GPU detectada: {gpu_name} ({vram_gb:.1f} GB VRAM)")
+
+MODEL_T2V = "Wan-AI/Wan2.1-T2V-14B-Diffusers" if vram_gb >= 38 else "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+print(f"Carregando modelo: {MODEL_T2V} ...")
+
+vae = AutoencoderKLWan.from_pretrained(MODEL_T2V, subfolder="vae", torch_dtype=torch.float32)
+pipe_t2v = WanPipeline.from_pretrained(MODEL_T2V, vae=vae, torch_dtype=torch.bfloat16)
+pipe_t2v.enable_model_cpu_offload()
+pipe_i2v = None
+
+app = FastAPI()
+
+class GenReq(BaseModel):
+    prompt: str
+    aspect_ratio: str = "9:16"
+    duration_sec: int = 8
+    image_base64: str | None = None
+
+@app.get("/health")
+def health():
+    return {"ok": True, "gpu": gpu_name, "vram_gb": round(vram_gb, 1), "model": MODEL_T2V}
+
+@app.post("/generate")
+def generate(req: GenReq):
+    global pipe_i2v
+    w, h = (480, 832) if req.aspect_ratio == "9:16" else (832, 480)
+    num_frames = 81  # ~5s fluído em 16fps (sincronizado com FFmpeg no MarcFlow)
+    neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
+
+    if req.image_base64 and vram_gb >= 22:
+        if pipe_i2v is None:
+            i2v_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
+            vae_i2v = AutoencoderKLWan.from_pretrained(i2v_id, subfolder="vae", torch_dtype=torch.float32)
+            pipe_i2v = WanImageToVideoPipeline.from_pretrained(i2v_id, vae=vae_i2v, torch_dtype=torch.bfloat16)
+            pipe_i2v.enable_model_cpu_offload()
+        img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((w, h))
+        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+    else:
+        frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        out_path = tmp.name
+    export_to_video(frames, out_path, fps=16)
+    with open(out_path, "rb") as f:
+        data = f.read()
+    os.remove(out_path)
+    return Response(content=data, media_type="video/mp4")
+
+def start_tunnel():
+    proc = subprocess.Popen(["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://localhost:8000"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        m = re.search(r"https://[-a-z0-9]+\\.trycloudflare\\.com", line)
+        if m:
+            print("\\n" + "="*60)
+            print("COLE ESTE LINK NO MARCFLOW -> CONECTAR COLAB GPU:")
+            print(m.group(0))
+            print("="*60 + "\\n")
+
+threading.Thread(target=start_tunnel, daemon=True).start()
+nest_asyncio.apply()
+uvicorn.run(app, host="0.0.0.0", port=8000)`;
 
     const handleEnhancePrompt = async () => {
         if (!selectedSession) return;
@@ -513,6 +627,15 @@ export default function AiStudioPage() {
                     <Button
                         variant="outline"
                         size="sm"
+                        onClick={() => setShowColabModal(true)}
+                        className="gap-1.5"
+                    >
+                        <span className={`h-2 w-2 rounded-full ${colabUrl ? "bg-emerald-500" : "bg-slate-400"}`} />
+                        {colabUrl ? "Colab GPU Conectado" : "Conectar Colab GPU"}
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => setShowKeyModal(true)}
                         className="gap-1.5"
                     >
@@ -744,7 +867,8 @@ export default function AiStudioPage() {
                                         onChange={(e) => setVideoModel(e.target.value)}
                                         className="w-full h-10 rounded-lg border border-slate-200 bg-white dark:bg-slate-900 px-3 text-xs font-medium"
                                     >
-                                        <option value="minimax-h3-turbo">⚡ Automático (Nuvem Grátis + Google Veo)</option>
+                                        <option value="minimax-h3-turbo">⚡ Automático (Colab GPU → Nuvem Grátis → Veo)</option>
+                                        <option value="colab-wan">🔥 Google Colab GPU (Wan 2.1 / A100-L4)</option>
                                         <option value="veo-3.0-fast-generate-001">🚀 Google Veo 3.0 Fast (Oficial / Créditos)</option>
                                         <option value="veo-3.0-generate-001">🎬 Google Veo 3.0 Cinema Ultra-HD</option>
                                         <option value="veo-2.0-generate-001">🎬 Google Veo 2.0 (Vídeo Real Oficial)</option>
@@ -1170,6 +1294,63 @@ export default function AiStudioPage() {
                         >
                             {savingKey ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
                             Salvar Chave API
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal 1B: Conectar Google Colab GPU (A100 / L4 / T4) */}
+            <Dialog open={showColabModal} onOpenChange={setShowColabModal}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Video className="h-5 w-5 text-purple-600" />
+                            Conectar Google Colab GPU (Wan 2.1 / A100)
+                        </DialogTitle>
+                        <DialogDescription>
+                            Use a GPU <strong>A100 / L4 / T4</strong> do seu Google Colab para gerar vídeos cinematográficos reais com <strong>Wan 2.1</strong> e conectar direto no MarcFlow.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4 py-2">
+                        <div className="rounded-lg border bg-slate-50 dark:bg-slate-900 p-3 space-y-2">
+                            <p className="text-xs font-semibold">Passo 1: Copie e rode este código em uma célula do Google Colab (com GPU A100/L4):</p>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                className="w-full"
+                                onClick={() => {
+                                    navigator.clipboard.writeText(colabCellScript);
+                                    toast.success("Código do Colab copiado! Cole em uma célula do Colab e execute.");
+                                }}
+                            >
+                                Copiar Código da Célula do Colab
+                            </Button>
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <Label className="text-xs font-semibold">Passo 2: Cole o link gerado pelo Colab (trycloudflare.com)</Label>
+                            <Input
+                                type="url"
+                                placeholder="https://xxxx-xxxx.trycloudflare.com"
+                                value={colabUrlInput}
+                                onChange={(e) => setColabUrlInput(e.target.value)}
+                            />
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowColabModal(false)}>
+                            Cancelar
+                        </Button>
+                        <Button
+                            onClick={handleSaveColabUrl}
+                            disabled={savingColab}
+                            className="bg-purple-600 hover:bg-purple-700 text-white"
+                        >
+                            {savingColab ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
+                            Salvar Conexão Colab
                         </Button>
                     </DialogFooter>
                 </DialogContent>

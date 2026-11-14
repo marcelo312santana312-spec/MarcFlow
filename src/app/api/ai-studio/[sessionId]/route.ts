@@ -552,14 +552,85 @@ async function pingUrlQuick(url: string, timeoutSec = 4): Promise<boolean> {
     }
 }
 
-async function checkAllProvidersHealth(apiKey: string | null): Promise<ProviderHealth[]> {
+async function resolveColabVideoUrl(dbSessionId: string): Promise<string> {
+    try {
+        const s = await prisma.session.findUnique({
+            where: { id: dbSessionId },
+            select: { config: true },
+        });
+        const cfg = (s?.config && typeof s.config === "object" ? s.config : {}) as Record<string, any>;
+        return String(cfg.colabVideoUrl || "").trim().replace(/\/+$/, "");
+    } catch {
+        return "";
+    }
+}
+
+async function generateColabGpuVideo(
+    colabUrl: string,
+    englishPrompt: string,
+    aspectRatio: "9:16" | "16:9",
+    imageBase64?: string,
+    durationSec = 8
+): Promise<Buffer | null> {
+    if (!colabUrl) return null;
+    const tmpDir = path.join(process.cwd(), "tmp");
+    await fs.mkdir(tmpDir, { recursive: true });
+    const reqPath = path.join(tmpDir, `colab_req_${Date.now()}.json`);
+    const outPath = path.join(tmpDir, `colab_out_${Date.now()}.mp4`);
+    try {
+        logger.info("AiStudio", `Enviando geração cinematográfica para seu Google Colab GPU (${colabUrl})...`);
+        const payload = {
+            prompt: englishPrompt,
+            aspect_ratio: aspectRatio,
+            duration_sec: durationSec,
+            image_base64: imageBase64 || null,
+        };
+        await fs.writeFile(reqPath, JSON.stringify(payload), "utf8");
+        await execFileAsync(
+            "curl",
+            [
+                "-4",
+                "-fsSL",
+                "--max-time",
+                "300",
+                "-X",
+                "POST",
+                `${colabUrl}/generate`,
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                `@${reqPath}`,
+                "-o",
+                outPath,
+            ],
+            { encoding: "utf8" }
+        );
+        const buf = await fs.readFile(outPath);
+        if (buf.length > 10000) {
+            recordProviderStatus("colab-gpu", "online", "Colab GPU conectado e gerando vídeos");
+            logger.info("AiStudio", `Vídeo gerado com sucesso no Google Colab GPU (${(buf.length / 1024 / 1024).toFixed(2)} MB)!`);
+            return buf;
+        }
+        return null;
+    } catch (err: any) {
+        const msg = String(err?.message || "Erro ao conectar no Colab");
+        recordProviderStatus("colab-gpu", "offline", "Colab desconectado ou célula parada");
+        logger.warn("AiStudio", `Colab GPU indisponível (${msg.slice(0, 120)})`);
+        return null;
+    } finally {
+        await fs.unlink(reqPath).catch(() => {});
+        await fs.unlink(outPath).catch(() => {});
+    }
+}
+
+async function checkAllProvidersHealth(apiKey: string | null, colabUrl?: string): Promise<ProviderHealth[]> {
     const now = Date.now();
     const isFresh = (id: string, ttlMs = 20 * 60 * 1000) => {
         const entry = providerQuotaCache[id];
         return entry && now - entry.updatedAt < ttlMs ? entry : null;
     };
 
-    const [pikaUp, ltxUp, edgeUp, geminiCheck] = await Promise.all([
+    const [pikaUp, ltxUp, edgeUp, geminiCheck, colabCheck] = await Promise.all([
         pingUrlQuick("https://bep40-ml-intern-flux3-comic.hf.space/api/config", 4),
         pingUrlQuick("https://lightricks-ltx-video-distilled.hf.space/gradio_api/info", 4),
         pingUrlQuick("https://innoai-edge-tts-text-to-speech.hf.space/gradio_api/info", 4),
@@ -581,6 +652,27 @@ async function checkAllProvidersHealth(apiKey: string | null): Promise<ProviderH
                 return { ok: false, reason: "Sem conexão com Google AI" };
             }
         })(),
+        (async () => {
+            if (!colabUrl) return { configured: false, ok: false, detail: "URL do Colab não configurada" };
+            try {
+                const { stdout } = await execFileAsync(
+                    "curl",
+                    ["-4", "-fsSL", "--max-time", "4", `${colabUrl}/health`],
+                    { encoding: "utf8" }
+                );
+                const j = JSON.parse(stdout || "{}");
+                if (j?.ok) {
+                    return {
+                        configured: true,
+                        ok: true,
+                        detail: `${j.gpu || "GPU"} • ${j.model || "Wan 2.1"}`,
+                    };
+                }
+                return { configured: true, ok: false, detail: "Colab respondeu sem status OK" };
+            } catch {
+                return { configured: true, ok: false, detail: "Túnel Colab offline (inicie a célula no Colab)" };
+            }
+        })(),
     ]);
 
     const veoCached = isFresh("google-veo");
@@ -588,6 +680,18 @@ async function checkAllProvidersHealth(apiKey: string | null): Promise<ProviderH
     const ltxCached = isFresh("ltx-video");
 
     return [
+        ...(colabCheck.configured
+            ? [
+                  {
+                      id: "colab-gpu",
+                      name: "Google Colab GPU (A100/L4)",
+                      category: "video" as const,
+                      status: (colabCheck.ok ? "online" : "offline") as "online" | "offline",
+                      detail: colabCheck.detail,
+                      updatedAt: now,
+                  },
+              ]
+            : []),
         {
             id: "google-veo",
             name: "Google Veo 3.0 / 2.0",
@@ -835,10 +939,11 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Acesso negado a esta sessão" }, { status: 403 });
         }
 
-        const { apiKey } = await resolveGeminiApiKey(sessionId);
+        const { apiKey, dbSessionId } = await resolveGeminiApiKey(sessionId);
+        const colabUrl = dbSessionId ? await resolveColabVideoUrl(dbSessionId) : "";
 
         if (request.nextUrl.searchParams.get("status") === "providers") {
-            const providers = await checkAllProvidersHealth(apiKey);
+            const providers = await checkAllProvidersHealth(apiKey, colabUrl);
             return NextResponse.json({ status: true, data: { providers } });
         }
 
@@ -855,6 +960,7 @@ export async function GET(
             data: {
                 hasApiKey: Boolean(apiKey),
                 maskedApiKey,
+                colabUrl,
                 items,
             },
         });
@@ -914,6 +1020,29 @@ export async function POST(
             return NextResponse.json({
                 status: true,
                 message: "Chave da API Google Gemini salva com sucesso!",
+            });
+        }
+
+        // 1B. Salvar URL do Túnel Google Colab GPU
+        if (action === "save-colab-url") {
+            const newUrl = String(body.colabUrl || "").trim().replace(/\/+$/, "");
+            const existing = await prisma.session.findUnique({
+                where: { id: dbSessionId },
+                select: { config: true },
+            });
+            const cfg = (existing?.config && typeof existing.config === "object" ? existing.config : {}) as Record<string, any>;
+            await prisma.session.update({
+                where: { id: dbSessionId },
+                data: {
+                    config: {
+                        ...cfg,
+                        colabVideoUrl: newUrl,
+                    },
+                },
+            });
+            return NextResponse.json({
+                status: true,
+                message: newUrl ? "Servidor Google Colab GPU conectado!" : "URL do Google Colab removida.",
             });
         }
 
@@ -1244,21 +1373,45 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 return null;
             };
 
+            const colabUrl = (body.colabUrl || (await resolveColabVideoUrl(dbSessionId)) || "").trim().replace(/\/+$/, "");
+            let cachedEnglishPrompt: string | null = null;
+            const getEnglishPrompt = async () => {
+                if (!cachedEnglishPrompt) {
+                    cachedEnglishPrompt = await buildEnglishVisualPromptWithGemini(
+                        apiKey,
+                        prompt,
+                        stylePreset,
+                        referenceImageBase64,
+                        referenceImageMimeType
+                    );
+                }
+                return cachedEnglishPrompt;
+            };
+
+            // 0. Se Google Colab GPU (A100/L4/T4) estiver configurado e selecionado (ou Automático), tentar Colab primeiro!
+            if (colabUrl && (requestedModel === "colab-wan" || requestedModel === "minimax-h3-turbo")) {
+                const engPrompt = await getEnglishPrompt();
+                videoBuffer = await generateColabGpuVideo(
+                    colabUrl,
+                    engPrompt,
+                    aspectRatio,
+                    imageInput?.imageBytes,
+                    totalDur
+                );
+                if (videoBuffer) {
+                    usedModel = "colab-wan-gpu";
+                }
+            }
+
             // 1. Se usuário pediu Google Veo explicitamente, tentar Veo primeiro
-            if (requestedModel.startsWith("veo-")) {
+            if (!videoBuffer && requestedModel.startsWith("veo-")) {
                 videoBuffer = await tryGoogleVeo(requestedModel);
                 if (videoBuffer) usedModel = requestedModel;
             }
 
             // 2. Tentar IA Video Diffusion na Nuvem (Pika H3 -> LTX-Video -> MiniMax H3)
             if (!videoBuffer && requestedModel !== "cinematic-multiscene") {
-                const englishPrompt = await buildEnglishVisualPromptWithGemini(
-                    apiKey,
-                    prompt,
-                    stylePreset,
-                    referenceImageBase64,
-                    referenceImageMimeType
-                );
+                const englishPrompt = await getEnglishPrompt();
                 videoBuffer = await generateCloudDiffusionVideo(
                     englishPrompt,
                     aspectRatio,
