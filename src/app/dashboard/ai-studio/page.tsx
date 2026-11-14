@@ -328,7 +328,7 @@ os.makedirs(os.environ["HF_HOME"], exist_ok=True)
 !pip install -q -U diffusers transformers accelerate sentencepiece protobuf ftfy imageio[ffmpeg] fastapi uvicorn
 !wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
 
-import gc, io, re, time, base64, tempfile, threading, subprocess, torch
+import gc, io, re, uuid, time, base64, tempfile, threading, subprocess, torch
 from fastapi import FastAPI
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -352,55 +352,91 @@ if hasattr(pipe_t2v.vae, "enable_slicing"): pipe_t2v.vae.enable_slicing()
 pipe_i2v = None
 
 app = FastAPI()
+jobs = {}
+gpu_lock = threading.Lock()
 
 class GenReq(BaseModel):
     prompt: str
     aspect_ratio: str = "9:16"
-    duration_sec: int = 8
+    duration_sec: int = 10
     image_base64: str | None = None
 
 @app.get("/health")
 def health():
     return {"ok": True, "gpu": gpu_name, "vram_gb": round(vram_gb, 1), "model": MODEL_T2V}
 
+def _render_video_sync(req: GenReq) -> bytes:
+    global pipe_i2v
+    with gpu_lock:
+        w, h = (480, 832) if req.aspect_ratio == "9:16" else (832, 480)
+        num_frames = 97  # 97 frames a 10 fps = ~10 segundos sem estourar RAM/VRAM na L4
+        neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
+
+        if req.image_base64 and vram_gb >= 38:
+            if pipe_i2v is None:
+                i2v_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
+                vae_i2v = AutoencoderKLWan.from_pretrained(i2v_id, subfolder="vae", torch_dtype=torch.float32)
+                pipe_i2v = WanImageToVideoPipeline.from_pretrained(i2v_id, vae=vae_i2v, torch_dtype=torch.bfloat16)
+                pipe_i2v.enable_model_cpu_offload()
+                if hasattr(pipe_i2v.vae, "enable_tiling"): pipe_i2v.vae.enable_tiling()
+            img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((w, h))
+            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+        elif req.image_base64 and vram_gb >= 14:
+            if pipe_i2v is None:
+                pipe_i2v = LTXImageToVideoPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=torch.bfloat16)
+                pipe_i2v.enable_model_cpu_offload()
+                if hasattr(pipe_i2v.vae, "enable_tiling"): pipe_i2v.vae.enable_tiling()
+            lw, lh = (512, 768) if req.aspect_ratio == "9:16" else (768, 512)
+            img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
+            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=30).frames[0]
+        else:
+            frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            out_path = tmp.name
+        export_to_video(frames, out_path, fps=10)
+        with open(out_path, "rb") as f:
+            data = f.read()
+        os.remove(out_path)
+        gc.collect()
+        if torch.cuda.is_available(): torch.cuda.empty_cache()
+        return data
+
+@app.post("/start")
+def start_job(req: GenReq):
+    job_id = str(uuid.uuid4())[:8]
+    jobs[job_id] = {"status": "running", "data": None, "error": None}
+    def worker():
+        try:
+            jobs[job_id]["data"] = _render_video_sync(req)
+            jobs[job_id]["status"] = "done"
+        except Exception as e:
+            jobs[job_id]["error"] = str(e)
+            jobs[job_id]["status"] = "error"
+    threading.Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+@app.get("/job/{job_id}")
+def job_status(job_id: str):
+    j = jobs.get(job_id)
+    if not j:
+        return {"status": "error", "error": "Job nao encontrado"}
+    return {"status": j["status"], "error": j["error"]}
+
+@app.get("/job/{job_id}/video")
+def job_video(job_id: str):
+    j = jobs.get(job_id)
+    if not j or j["status"] != "done" or not j["data"]:
+        return Response(status_code=404)
+    data = j["data"]
+    del jobs[job_id]
+    return Response(content=data, media_type="video/mp4")
+
 @app.post("/generate")
 def generate(req: GenReq):
-    global pipe_i2v
-    w, h = (480, 832) if req.aspect_ratio == "9:16" else (832, 480)
-    num_frames = 97  # 97 frames a 10 fps = ~10 segundos sem estourar RAM/VRAM na L4
-    neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
-
-    if req.image_base64 and vram_gb >= 38:
-        if pipe_i2v is None:
-            i2v_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
-            vae_i2v = AutoencoderKLWan.from_pretrained(i2v_id, subfolder="vae", torch_dtype=torch.float32)
-            pipe_i2v = WanImageToVideoPipeline.from_pretrained(i2v_id, vae=vae_i2v, torch_dtype=torch.bfloat16)
-            pipe_i2v.enable_model_cpu_offload()
-            if hasattr(pipe_i2v.vae, "enable_tiling"): pipe_i2v.vae.enable_tiling()
-        img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((w, h))
-        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
-    elif req.image_base64 and vram_gb >= 14:
-        if pipe_i2v is None:
-            pipe_i2v = LTXImageToVideoPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=torch.bfloat16)
-            pipe_i2v.enable_model_cpu_offload()
-            if hasattr(pipe_i2v.vae, "enable_tiling"): pipe_i2v.vae.enable_tiling()
-        lw, lh = (512, 768) if req.aspect_ratio == "9:16" else (768, 512)
-        img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
-        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=30).frames[0]
-    else:
-        frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
-
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        out_path = tmp.name
-    export_to_video(frames, out_path, fps=10)
-    with open(out_path, "rb") as f:
-        data = f.read()
-    os.remove(out_path)
-    gc.collect()
-    if torch.cuda.is_available(): torch.cuda.empty_cache()
-    return Response(content=data, media_type="video/mp4")
+    return Response(content=_render_video_sync(req), media_type="video/mp4")
 
 def start_tunnel():
     proc = subprocess.Popen(["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://localhost:8000"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -613,25 +613,80 @@ async function generateColabGpuVideo(
             image_base64: imageBase64 || null,
         };
         await fs.writeFile(reqPath, JSON.stringify(payload), "utf8");
-        await execFileAsync(
-            "curl",
-            [
-                "-4",
-                "-fsSL",
-                "--max-time",
-                "480",
-                "-X",
-                "POST",
-                `${colabUrl}/generate`,
-                "-H",
-                "Content-Type: application/json",
-                "--data-binary",
-                `@${reqPath}`,
-                "-o",
-                outPath,
-            ],
-            { encoding: "utf8" }
-        );
+
+        // 1. Tenta modo assíncrono (/start + polling /job/{id}) para evitar timeout de 100s do túnel Cloudflare
+        let usedAsyncMode = false;
+        try {
+            const { stdout: startOut } = await execFileAsync(
+                "curl",
+                [
+                    "-4",
+                    "-fsSL",
+                    "--max-time",
+                    "30",
+                    "-X",
+                    "POST",
+                    `${colabUrl}/start`,
+                    "-H",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    `@${reqPath}`,
+                ],
+                { encoding: "utf8" }
+            );
+            const startJson = JSON.parse(startOut || "{}");
+            if (startJson?.job_id) {
+                usedAsyncMode = true;
+                const jobId = String(startJson.job_id);
+                pushStudioLog("INFO", `Colab GPU: renderização iniciada em segundo plano (job ${jobId})...`);
+                const maxPolls = 130; // ~8.5 minutos
+                for (let i = 0; i < maxPolls; i++) {
+                    await new Promise((r) => setTimeout(r, 4000));
+                    const { stdout: statusOut } = await execFileAsync(
+                        "curl",
+                        ["-4", "-fsSL", "--max-time", "15", `${colabUrl}/job/${encodeURIComponent(jobId)}`],
+                        { encoding: "utf8" }
+                    );
+                    const st = JSON.parse(statusOut || "{}");
+                    if (st?.status === "done") {
+                        await execFileAsync(
+                            "curl",
+                            ["-4", "-fsSL", "--max-time", "60", `${colabUrl}/job/${encodeURIComponent(jobId)}/video`, "-o", outPath],
+                            { encoding: "utf8" }
+                        );
+                        break;
+                    }
+                    if (st?.status === "error") {
+                        throw new Error(st?.error || "Erro interno ao renderizar no Colab");
+                    }
+                }
+            }
+        } catch (asyncErr: any) {
+            if (usedAsyncMode) throw asyncErr;
+            // Se o Colab ainda estiver com script antigo (sem /start), cai no /generate síncrono
+        }
+
+        if (!usedAsyncMode) {
+            await execFileAsync(
+                "curl",
+                [
+                    "-4",
+                    "-fsSL",
+                    "--max-time",
+                    "480",
+                    "-X",
+                    "POST",
+                    `${colabUrl}/generate`,
+                    "-H",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    `@${reqPath}`,
+                    "-o",
+                    outPath,
+                ],
+                { encoding: "utf8" }
+            );
+        }
         const buf = await fs.readFile(outPath);
         if (buf.length > 10000) {
             recordProviderStatus("colab-gpu", "online", "Colab GPU conectado e gerando vídeos");
