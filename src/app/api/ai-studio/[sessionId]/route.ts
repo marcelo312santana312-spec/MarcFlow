@@ -639,7 +639,7 @@ async function generateColabGpuVideo(
                 usedAsyncMode = true;
                 const jobId = String(startJson.job_id);
                 pushStudioLog("INFO", `Colab GPU: renderização iniciada em segundo plano (job ${jobId})...`);
-                const maxPolls = 130; // ~8.5 minutos
+                const maxPolls = 240; // ~16 minutos (suporta Wan 2.1 14B na A100 com folga)
                 for (let i = 0; i < maxPolls; i++) {
                     await new Promise((r) => setTimeout(r, 4000));
                     const { stdout: statusOut } = await execFileAsync(

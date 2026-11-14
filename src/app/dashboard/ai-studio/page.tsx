@@ -392,7 +392,7 @@ def _render_video_sync(req: GenReq) -> bytes:
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
             frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=30).frames[0]
         else:
-            frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+            frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=18).frames[0]
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             out_path = tmp.name
