@@ -6,6 +6,7 @@ import moment from "moment-timezone";
 import path from "path";
 import fs from "fs/promises";
 import { startRun } from "@/modules/flows/engine";
+import { runCrmAutomationsTick } from "./crm-automation";
 import {
     generateWAMessage,
     generateMessageIDV2,
@@ -588,6 +589,8 @@ const checkScheduledMessages = async () => {
         for (const msg of pendingMessages) {
             await executeScheduledMessage(msg, tz);
         }
+
+        await runCrmAutomationsTick();
     } catch (e) {
         logger.error("Scheduler", "Erro no loop de agendamento:", e);
     }

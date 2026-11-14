@@ -111,10 +111,10 @@ export default function AffiliatesPage() {
     const [shopeeConfigured, setShopeeConfigured] = useState(false);
     const [showShopeeSecret, setShowShopeeSecret] = useState(false);
 
-    // Mercado Livre
-    const [mlEnabled, setMlEnabled] = useState(true);
-    const [mlApiUrl, setMlApiUrl] = useState("http://localhost:5678/webhook/meli-affiliate");
-    const [mlTag, setMlTag] = useState("venddor17");
+    // Mercado Livre (configuração opcional por empresa)
+    const [mlEnabled, setMlEnabled] = useState(false);
+    const [mlApiUrl, setMlApiUrl] = useState("");
+    const [mlTag, setMlTag] = useState("");
     const [mlToken, setMlToken] = useState("");
     const [mlHasToken, setMlHasToken] = useState(false);
     const [mlTokenPreview, setMlTokenPreview] = useState("");
@@ -275,8 +275,8 @@ export default function AffiliatesPage() {
                 setShopeeConfigured(Boolean(d.shopee?.configured));
 
                 setMlEnabled(Boolean(d.mercadolivre?.enabled));
-                setMlApiUrl(d.mercadolivre?.apiUrl || "http://localhost:5678/webhook/meli-affiliate");
-                setMlTag(d.mercadolivre?.tag || "venddor17");
+                setMlApiUrl(d.mercadolivre?.apiUrl || "");
+                setMlTag(d.mercadolivre?.tag || "");
                 setMlToken("");
                 setMlHasToken(Boolean(d.mercadolivre?.hasToken));
                 setMlTokenPreview(d.mercadolivre?.tokenPreview || "");
@@ -467,7 +467,9 @@ export default function AffiliatesPage() {
                             <div className="text-2xl font-bold tracking-tight text-yellow-600 dark:text-yellow-400">
                                 {stats.mercadolivre}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">Tag venddor17 / n8n</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                                {mlTag ? `Etiqueta: ${mlTag}` : "Integração opcional por empresa"}
+                            </p>
                         </CardContent>
                     </Card>
 
@@ -1024,19 +1026,19 @@ export default function AffiliatesPage() {
                         <CardContent className="space-y-4">
                             <div className="grid sm:grid-cols-2 gap-3">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="ml-tag">Etiqueta de Afiliado (Tag)</Label>
+                                    <Label htmlFor="ml-tag">Etiqueta de Afiliado (Tag opcional)</Label>
                                     <Input
                                         id="ml-tag"
-                                        placeholder="venddor17"
+                                        placeholder="Ex: sua-tag-afiliado"
                                         value={mlTag}
                                         onChange={(e) => setMlTag(e.target.value)}
                                     />
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="ml-api-url">URL do Webhook (n8n / Builder)</Label>
+                                    <Label htmlFor="ml-api-url">URL do Webhook de Conversão (opcional)</Label>
                                     <Input
                                         id="ml-api-url"
-                                        placeholder="http://localhost:5678/webhook/meli-affiliate"
+                                        placeholder="https://seu-webhook.empresa.com/afiliados"
                                         value={mlApiUrl}
                                         onChange={(e) => setMlApiUrl(e.target.value)}
                                     />

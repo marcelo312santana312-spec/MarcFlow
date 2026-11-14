@@ -345,6 +345,8 @@ const ACTIONS: { type: FlowAction["type"]; label: string }[] = [
     { type: "notify", label: "Notificar equipe por WhatsApp" }, { type: "pauseAutomation", label: "Pausar automações do contato" },
     { type: "resumeAutomation", label: "Reativar automações do contato" },
     { type: "optOut", label: "Bloquear transmissões para o contato" },
+    { type: "ai_qualifier", label: "Qualificador IA (Gemini / OpenAI)" },
+    { type: "http_request", label: "Requisição HTTP / Webhook ERP" },
 ];
 
 function newAction(type: FlowAction["type"]): FlowAction {
@@ -353,6 +355,8 @@ function newAction(type: FlowAction["type"]): FlowAction {
         case "setField": return { id, type, value: "" };
         case "notify": return { id, type, phones: "", message: "Novo contato no fluxo: {nome-completo} ({telefone})" };
         case "pauseAutomation": return { id, type, forever: false, value: 30, unit: "minutes" };
+        case "ai_qualifier": return { id, type, provider: "auto", systemPrompt: "Resuma o interesse de {nome-completo} e classifique o lead (Quente/Morno/Frio).", replyToContact: false };
+        case "http_request": return { id, type, method: "POST", url: "https://", headersJson: '{"Content-Type": "application/json"}', bodyJson: '{"telefone": "{telefone}", "nome": "{nome-completo}"}' };
         default: return { id, type } as FlowAction;
     }
 }
@@ -391,6 +395,98 @@ function ActionEditor({ node, set, color }: { node: FlowNode<"action">; set: (d:
                     )}
                     {a.type === "resumeAutomation" && <p className="text-[12px] text-muted-foreground">Remove a pausa de automações deste contato.</p>}
                     {a.type === "optOut" && <p className="text-[12px] text-muted-foreground">Coloca o contato na lista de quem pediu para sair. Transmissões com &quot;pular quem pediu para sair&quot; não enviam para ele.</p>}
+                    {a.type === "ai_qualifier" && (
+                        <div className="space-y-2.5">
+                            <Pick
+                                value={a.provider || "auto"}
+                                onChange={v => upd(i, { ...a, provider: v as "auto" | "gemini" | "openai" })}
+                                options={[
+                                    { value: "auto", label: "Automático (configuração do Bot)" },
+                                    { value: "gemini", label: "Google Gemini" },
+                                    { value: "openai", label: "OpenAI (GPT)" },
+                                ]}
+                                placeholder="Provedor de IA"
+                            />
+                            <Input
+                                className="h-9"
+                                placeholder="Modelo opcional (ex: gemini-2.5-flash ou gpt-4o-mini)"
+                                value={a.model || ""}
+                                onChange={e => upd(i, { ...a, model: e.target.value })}
+                            />
+                            <TextField
+                                value={a.systemPrompt}
+                                onChange={systemPrompt => upd(i, { ...a, systemPrompt })}
+                                placeholder="Prompt de qualificação (aceita {variaveis})"
+                                rows={3}
+                                formatting={false}
+                                accent={color}
+                                maxLength={2000}
+                            />
+                            <div className="space-y-1">
+                                <Label className="text-[11px] text-muted-foreground">Salvar resumo/resposta no campo (opcional)</Label>
+                                <FieldPicker
+                                    fieldKey={a.saveFieldKey}
+                                    scope={a.saveFieldScope}
+                                    onChange={(saveFieldKey, saveFieldScope) => upd(i, { ...a, saveFieldKey, saveFieldScope })}
+                                />
+                            </div>
+                            <label className="flex items-center gap-2 text-xs">
+                                <Checkbox checked={!!a.replyToContact} onCheckedChange={v => upd(i, { ...a, replyToContact: !!v })} />
+                                Enviar resposta da IA diretamente ao contato
+                            </label>
+                        </div>
+                    )}
+                    {a.type === "http_request" && (
+                        <div className="space-y-2.5">
+                            <div className="flex gap-2">
+                                <Pick
+                                    className="w-28 shrink-0"
+                                    value={a.method || "POST"}
+                                    onChange={v => upd(i, { ...a, method: v as "GET" | "POST" | "PUT" | "PATCH" })}
+                                    options={[
+                                        { value: "POST", label: "POST" },
+                                        { value: "GET", label: "GET" },
+                                        { value: "PUT", label: "PUT" },
+                                        { value: "PATCH", label: "PATCH" },
+                                    ]}
+                                />
+                                <Input
+                                    className="h-9 flex-1"
+                                    placeholder="https://api.seuerp.com/webhook"
+                                    value={a.url}
+                                    onChange={e => upd(i, { ...a, url: e.target.value })}
+                                />
+                            </div>
+                            <TextField
+                                value={a.headersJson || ""}
+                                onChange={headersJson => upd(i, { ...a, headersJson })}
+                                placeholder='Cabeçalhos JSON (opcional): {"Authorization": "Bearer ..."}'
+                                rows={2}
+                                formatting={false}
+                                accent={color}
+                                maxLength={1000}
+                            />
+                            {a.method !== "GET" && (
+                                <TextField
+                                    value={a.bodyJson || ""}
+                                    onChange={bodyJson => upd(i, { ...a, bodyJson })}
+                                    placeholder='Body JSON (aceita {variaveis})'
+                                    rows={3}
+                                    formatting={false}
+                                    accent={color}
+                                    maxLength={2000}
+                                />
+                            )}
+                            <div className="space-y-1">
+                                <Label className="text-[11px] text-muted-foreground">Salvar resposta no campo (opcional)</Label>
+                                <FieldPicker
+                                    fieldKey={a.saveFieldKey}
+                                    scope={a.saveFieldScope}
+                                    onChange={(saveFieldKey, saveFieldScope) => upd(i, { ...a, saveFieldKey, saveFieldScope })}
+                                />
+                            </div>
+                        </div>
+                    )}
                 </Card>
             ))}
             <Select value="" onValueChange={t => set({ actions: [...acts, newAction(t as FlowAction["type"])] })}>

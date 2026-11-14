@@ -53,6 +53,27 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     return json.data as T;
 }
 
+const OPT_OUT_FOOTER = "\n\n_Responda SAIR para não receber mais mensagens._";
+
+function resolveSpintaxPreview(text: string, seed: number): string {
+    if (!text) return "";
+    let idx = 0;
+    return text.replace(/\{([^{}]*\|[^{}]*)\}/g, (_, opts: string) => {
+        const parts = opts.split("|");
+        const pick = parts[(seed + idx++) % parts.length] ?? "";
+        return pick;
+    });
+}
+
+function isBrtBusinessHoursNow(): boolean {
+    try {
+        const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(new Date()));
+        return !Number.isNaN(h) && h >= 8 && h < 20;
+    } catch {
+        return true;
+    }
+}
+
 export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
     sessionId: string; draft?: BroadcastDraft | null;
     onStarted: (id: string) => void; onDraftSaved: () => void;
@@ -73,6 +94,9 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
     const [intervalValue, setIntervalValue] = useState(initialSeconds >= 60 && initialSeconds % 60 === 0 ? initialSeconds / 60 : initialSeconds);
     const [pauseOnFailure, setPauseOnFailure] = useState(draft?.pauseOnFailure ?? true);
     const [skipOptedOut, setSkipOptedOut] = useState(draft?.skipOptedOut ?? true);
+    const [respectBusinessHours, setRespectBusinessHours] = useState(true);
+    const [includeOptOutText, setIncludeOptOutText] = useState(true);
+    const [spintaxSeed, setSpintaxSeed] = useState(0);
     const [when, setWhen] = useState<"now" | "schedule">(draft?.scheduledAt ? "schedule" : "now");
     const [scheduledAt, setScheduledAt] = useState(() => toLocalInput(draft?.scheduledAt ? new Date(draft.scheduledAt) : new Date(Date.now() + 3600_000)));
     const [tab, setTab] = useState<"contacts" | "file" | "paste">("contacts");
@@ -119,7 +143,14 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
         const jid = Object.keys(contacts).find(j => known(j)) ?? recipients[0];
         return jid ? { jid, name: known(jid) } : null;
     }, [contacts, recipients, items]);
-    const preview = previewContact ? renderBroadcast(message, previewContact) : message.replace(/\{\{\s*nome\s*\}\}/g, "(nome)").replace(/\{\{\s*primeiro_nome\s*\}\}/g, "(nome)").replace(/\{\{\s*telefone\s*\}\}/g, "(telefone)");
+    const rawWithOptOut = useMemo(() => {
+        if (!includeOptOutText || !message.trim()) return message;
+        if (/\bsair\b/i.test(message)) return message;
+        return `${message.trimEnd()}${OPT_OUT_FOOTER}`.slice(0, MAX_MESSAGE_LENGTH);
+    }, [message, includeOptOutText]);
+
+    const previewBase = previewContact ? renderBroadcast(rawWithOptOut, previewContact) : rawWithOptOut.replace(/\{\{\s*nome\s*\}\}/g, "(nome)").replace(/\{\{\s*primeiro_nome\s*\}\}/g, "(nome)").replace(/\{\{\s*telefone\s*\}\}/g, "(telefone)");
+    const preview = useMemo(() => resolveSpintaxPreview(previewBase, spintaxSeed), [previewBase, spintaxSeed]);
     const step1 = recipients.length > 0, step2 = !!message.trim() || !!attachment;
     const scheduleDate = new Date(scheduledAt);
     const scheduleInvalid = when === "schedule" && (isNaN(scheduleDate.getTime()) || scheduleDate.getTime() < Date.now());
@@ -178,11 +209,17 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
         } catch (e) { toast.error((e as Error).message); } finally { setUploading(false); }
     };
 
-    const payload = () => ({
-        name, message, recipients, mediaAssetId: attachment?.id ?? null,
-        intervalMs: intervalSeconds * 1000, pauseOnFailure, skipOptedOut,
-        scheduledAt: when === "schedule" && !isNaN(scheduleDate.getTime()) ? scheduleDate.toISOString() : null,
-    });
+    const payload = () => {
+        const cleanName = name.trim();
+        const campaignName = respectBusinessHours && !cleanName.includes("[08h-20h]")
+            ? `${cleanName || "Transmissão"} [08h-20h]`
+            : cleanName;
+        return {
+            name: campaignName, message: rawWithOptOut, recipients, mediaAssetId: attachment?.id ?? null,
+            intervalMs: intervalSeconds * 1000, pauseOnFailure, skipOptedOut,
+            scheduledAt: when === "schedule" && !isNaN(scheduleDate.getTime()) ? scheduleDate.toISOString() : null,
+        };
+    };
 
     const saveDraft = async () => {
         if (savingDraft) return;
@@ -402,11 +439,16 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
                                     <option value="seconds">Segundos</option><option value="minutes">Minutos</option>
                                 </select>
                             </div>
-                            <p className="flex items-center gap-2 rounded-lg bg-[#E7F6EE] px-3 py-1.5 text-sm font-medium text-[#0E8A4F]"><Clock className="h-4 w-4" />Enviar 1 mensagem a cada {intervalText}</p>
-                            <p className="text-xs text-muted-foreground">{belowFloor ? `Mínimo de ${MIN_INTERVAL_S} segundos entre mensagens.` : "Escolha segundos ou minutos."} Duração estimada: <b>{estimate === "—" ? "—" : `≈ ${estimate}`}</b></p>
+                            <p className="flex items-center gap-2 rounded-lg bg-[#E7F6EE] px-3 py-1.5 text-sm font-medium text-[#0E8A4F]"><Clock className="h-4 w-4" />1 mensagem a cada {intervalText} (±30% jitter anti-ban)</p>
+                            <p className="text-xs text-muted-foreground">{belowFloor ? `Mínimo de ${MIN_INTERVAL_S} segundos entre mensagens.` : "Variação aleatória automática entre envios para simular comportamento humano."} Duração estimada: <b>{estimate === "—" ? "—" : `≈ ${estimate}`}</b></p>
+                            <label className="flex items-center gap-2 text-sm"><Checkbox checked={respectBusinessHours} onCheckedChange={v => setRespectBusinessHours(v === true)} />Respeitar horário comercial (08h–20h BRT)</label>
+                            {respectBusinessHours && !isBrtBusinessHoursNow() && (
+                                <p className="rounded-md bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">Agora está fora do horário comercial (08h–20h BRT). O envio pausará automaticamente até às 08h.</p>
+                            )}
+                            <label className="flex items-center gap-2 text-sm"><Checkbox checked={includeOptOutText} onCheckedChange={v => setIncludeOptOutText(v === true)} />Incluir instrução &quot;Responda SAIR&quot; (opt-out)</label>
                             <label className="flex items-center gap-2 text-sm"><Checkbox checked={pauseOnFailure} onCheckedChange={v => setPauseOnFailure(v === true)} />Pausar em caso de falha</label>
                             <label className="flex items-center gap-2 text-sm"><Checkbox checked={skipOptedOut} onCheckedChange={v => setSkipOptedOut(v === true)} />Excluir contatos descadastrados</label>
-                            <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Info className="h-3.5 w-3.5" />O intervalo não garante proteção contra bloqueios.</p>
+                            <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Info className="h-3.5 w-3.5" />Taxa de resposta dos destinatários é rastreada automaticamente após o disparo.</p>
                         </div>
                         <div className="hidden w-px bg-border md:block" />
                         <div className="space-y-3" role="radiogroup" aria-label="Quando enviar">
@@ -461,6 +503,10 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
                                         ))}
                                     </PopoverContent>
                                 </Popover>
+                                <button type="button" onClick={() => insertAtCursor("{Oi|Olá|Tudo bem}")} title="Inserir variação aleatória (Spintax)"
+                                    className="rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-muted">
+                                    + Spintax
+                                </button>
                                 <span className="ml-auto text-xs tabular-nums text-muted-foreground">{message.length}/{MAX_MESSAGE_LENGTH}</span>
                             </div>
                         </div>
@@ -480,6 +526,11 @@ export function NewBroadcast({ sessionId, draft, onStarted, onDraftSaved }: {
                             <Button variant="outline" onClick={sendTest} disabled={testing || (!message.trim() && !attachment)} className="h-10 rounded-xl">
                                 {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}Enviar teste
                             </Button>
+                            {/\{[^{}]*\|[^{}]*\}/.test(message) && (
+                                <Button type="button" variant="outline" onClick={() => setSpintaxSeed(s => s + 1)} className="h-10 rounded-xl">
+                                    Sortear variação Spintax
+                                </Button>
+                            )}
                             <span className="text-xs text-muted-foreground">Envia a mensagem para o seu próprio WhatsApp.</span>
                         </div>
                     </section>

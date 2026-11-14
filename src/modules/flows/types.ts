@@ -58,7 +58,27 @@ export type FlowAction =
     | { id: string; type: "notify"; phones: string; message: string }
     | { id: string; type: "pauseAutomation"; forever: boolean; value: number; unit: TimeUnit }
     | { id: string; type: "resumeAutomation" }
-    | { id: string; type: "optOut" };
+    | { id: string; type: "optOut" }
+    | {
+        id: string;
+        type: "ai_qualifier";
+        provider?: "auto" | "gemini" | "openai";
+        model?: string;
+        systemPrompt: string;
+        saveFieldKey?: string;
+        saveFieldScope?: FieldScope;
+        replyToContact?: boolean;
+    }
+    | {
+        id: string;
+        type: "http_request";
+        method: "GET" | "POST" | "PUT" | "PATCH";
+        url: string;
+        headersJson?: string;
+        bodyJson?: string;
+        saveFieldKey?: string;
+        saveFieldScope?: FieldScope;
+    };
 
 export type ConditionSource = "tag" | "weekday" | "time" | "field";
 export type ConditionOp =
@@ -238,6 +258,8 @@ export function validateGraph(graph: FlowGraph): GraphIssue[] {
                     if ((a.type === "addTag" || a.type === "removeTag") && !a.labelId) err("escolha a etiqueta.");
                     if ((a.type === "setField" || a.type === "clearField") && !a.fieldKey) err("escolha o campo.");
                     if (a.type === "notify" && (!a.phones.trim() || !a.message.trim())) err("informe o número e a mensagem da notificação.");
+                    if (a.type === "ai_qualifier" && !a.systemPrompt.trim()) err("informe o prompt de qualificação da IA.");
+                    if (a.type === "http_request" && !a.url.trim()) err("informe a URL do webhook/ERP.");
                 }
                 break;
             }

@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Send, Paperclip, ArrowLeft, FileText, Image as ImageIcon, Music, Video, Download, ArrowDown, CornerUpLeft, Copy, Trash2, Info, X, Search, Phone, MoreVertical, Smile, Mic, Check, CheckCheck, Clock, UserRound, RefreshCw, MailOpen, Zap } from "lucide-react";
+import { Send, Paperclip, ArrowLeft, FileText, Image as ImageIcon, Music, Video, Download, ArrowDown, CornerUpLeft, Copy, Trash2, Info, X, Search, Phone, MoreVertical, Smile, Mic, Check, CheckCheck, Clock, UserRound, RefreshCw, MailOpen, Zap, Briefcase, QrCode, Bot, Loader2, Plus, StickyNote } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import { BotPausedBanner } from "./bot-paused-banner";
 import {
     AlertDialog,
@@ -236,6 +239,7 @@ export function ChatWindow({ sessionId, jid, name, onBack, returnTo }: ChatWindo
 
     const { getSocket, joinSession } = useSocket();
     const [qrOpen, setQrOpen] = useState(false);
+    const [crmOpen, setCrmOpen] = useState(false);
     const qrProgress = useQuickReplyProgress(getSocket, jid);
     const getDateLabel = useDateLabel();
 
@@ -560,6 +564,20 @@ export function ChatWindow({ sessionId, jid, name, onBack, returnTo }: ChatWindo
                     <StatusLine presence={presence} isGroup={isGroup} phone={phone} />
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                        type="button"
+                        variant={crmOpen ? "default" : "outline"}
+                        size="sm"
+                        className="h-8 gap-1.5 px-2.5 text-xs font-medium"
+                        onClick={() => {
+                            setCrmOpen(o => !o);
+                            setQrOpen(false);
+                        }}
+                        title="Abrir painel CRM / Funil"
+                    >
+                        <Briefcase className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">CRM / Funil</span>
+                    </Button>
                     <HeaderBtn title="Buscar na conversa" active={searchOpen} onClick={() => { setSearchOpen(o => !o); setSearchQuery(""); }}><Search className="h-5 w-5" /></HeaderBtn>
                     <HeaderBtn title="Chamadas não são suportadas pela conexão do WhatsApp Web" disabled><Phone className="h-5 w-5" /></HeaderBtn>
                     <HeaderBtn title="Chamadas de vídeo não são suportadas pela conexão do WhatsApp Web" disabled><Video className="h-5 w-5" /></HeaderBtn>
@@ -805,7 +823,7 @@ export function ChatWindow({ sessionId, jid, name, onBack, returnTo }: ChatWindo
                             onChange={(e) => { setInput(e.target.value); const el = e.target; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 140) + "px"; }}
                             onKeyDown={handleKeyDown} placeholder="Digite uma mensagem..." rows={1} style={{ minHeight: "44px", maxHeight: "140px" }}
                             className="flex-1 resize-none rounded-[22px] bg-muted/50 px-4 py-2.5 text-[15px] leading-normal text-foreground placeholder:text-muted-foreground focus:outline-none" />
-                        <button type="button" title="Respostas rápidas" onClick={() => setQrOpen(o => !o)}
+                        <button type="button" title="Respostas rápidas" onClick={() => { setQrOpen(o => !o); setCrmOpen(false); }}
                             className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-full hover:bg-muted", qrOpen ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground")}><Zap className="h-5 w-5" /></button>
                         <button type="button" title="Gravar áudio" onClick={startRecording}
                             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"><Mic className="h-5 w-5" /></button>
@@ -819,6 +837,18 @@ export function ChatWindow({ sessionId, jid, name, onBack, returnTo }: ChatWindo
             </div>
         </div>
         {qrOpen && <QuickReplyPanel sessionId={sessionId} jid={jid} onClose={() => setQrOpen(false)} />}
+        {crmOpen && (
+            <CrmSidePanel
+                sessionId={sessionId}
+                jid={jid}
+                contactName={displayName}
+                onClose={() => setCrmOpen(false)}
+                onSendPixMessage={async (text) => {
+                    await sendChatMessage(sessionId, jid, text);
+                    setTimeout(() => fetchMessages(), 800);
+                }}
+            />
+        )}
         </div>
     );
 }
@@ -880,5 +910,503 @@ function MenuItem({ icon: Icon, children, onClick }: { icon: typeof Info; childr
         <button type="button" onClick={onClick} className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm hover:bg-muted">
             <Icon className="h-4 w-4 text-muted-foreground" />{children}
         </button>
+    );
+}
+
+interface CrmStage {
+    id: string;
+    name: string;
+    color: string;
+    isWon: boolean;
+    isLost: boolean;
+}
+interface CrmDealNote {
+    id: string;
+    authorName: string | null;
+    content: string;
+    createdAt: string;
+}
+interface CrmDeal {
+    id: string;
+    pipelineId: string;
+    stageId: string;
+    title: string;
+    valueCents: number;
+    status: string;
+    stage: CrmStage;
+    notes: CrmDealNote[];
+}
+interface CrmAgent {
+    id: string;
+    name: string | null;
+    email: string;
+}
+interface CrmTicket {
+    id: string;
+    assignedUserId: string | null;
+    status: string;
+    priority: string;
+    botPausedUntil: string | null;
+}
+interface CrmProduct {
+    id: string;
+    name: string;
+    description: string | null;
+    priceCents: number;
+    pixKey: string | null;
+}
+
+function CrmSidePanel({
+    sessionId,
+    jid,
+    contactName,
+    onClose,
+    onSendPixMessage,
+}: {
+    sessionId: string;
+    jid: string;
+    contactName: string;
+    onClose: () => void;
+    onSendPixMessage: (text: string) => Promise<void>;
+}) {
+    const [loading, setLoading] = useState(true);
+    const [stages, setStages] = useState<CrmStage[]>([]);
+    const [pipelineId, setPipelineId] = useState<string>("");
+    const [deal, setDeal] = useState<CrmDeal | null>(null);
+    const [newDealTitle, setNewDealTitle] = useState(`Negócio - ${contactName}`);
+    const [valueReais, setValueReais] = useState("0,00");
+    const [noteText, setNoteText] = useState("");
+    const [savingNote, setSavingNote] = useState(false);
+
+    const [ticket, setTicket] = useState<CrmTicket | null>(null);
+    const [agents, setAgents] = useState<CrmAgent[]>([]);
+
+    const [products, setProducts] = useState<CrmProduct[]>([]);
+    const [selectedProductId, setSelectedProductId] = useState<string>("");
+    const [sendingPix, setSendingPix] = useState(false);
+
+    const loadCrmData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [pRes, dRes, tRes, prRes] = await Promise.all([
+                fetch("/api/crm/pipelines"),
+                fetch(`/api/crm/deals?sessionId=${encodeURIComponent(sessionId)}&contactJid=${encodeURIComponent(jid)}`),
+                fetch(`/api/crm/tickets?sessionId=${encodeURIComponent(sessionId)}&contactJid=${encodeURIComponent(jid)}`),
+                fetch("/api/crm/products?activeOnly=true"),
+            ]);
+
+            if (pRes.ok) {
+                const pj = await pRes.json();
+                const firstPipeline = pj.data?.[0];
+                if (firstPipeline) {
+                    setPipelineId(firstPipeline.id);
+                    setStages(firstPipeline.stages || []);
+                }
+            }
+            if (dRes.ok) {
+                const dj = await dRes.json();
+                const foundDeal = dj.data?.[0] || null;
+                setDeal(foundDeal);
+                if (foundDeal) {
+                    setValueReais((foundDeal.valueCents / 100).toFixed(2).replace(".", ","));
+                }
+            }
+            if (tRes.ok) {
+                const tj = await tRes.json();
+                setTicket(tj.data?.[0] || null);
+                setAgents(tj.agents || []);
+            }
+            if (prRes.ok) {
+                const prj = await prRes.json();
+                const list: CrmProduct[] = prj.data || [];
+                setProducts(list);
+                if (list.length > 0) setSelectedProductId(list[0].id);
+            }
+        } catch {
+            toast.error("Falha ao carregar dados do CRM");
+        } finally {
+            setLoading(false);
+        }
+    }, [sessionId, jid]);
+
+    useEffect(() => {
+        loadCrmData();
+    }, [loadCrmData]);
+
+    const parseReaisToCents = (val: string) => {
+        const num = parseFloat(val.replace(/[^\d.,]/g, "").replace(",", "."));
+        return isNaN(num) || num < 0 ? 0 : Math.round(num * 100);
+    };
+
+    const handleCreateDeal = async () => {
+        try {
+            const res = await fetch("/api/crm/deals", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId,
+                    contactJid: jid,
+                    contactName,
+                    title: newDealTitle.trim() || `Negócio - ${contactName}`,
+                    valueCents: parseReaisToCents(valueReais),
+                    pipelineId: pipelineId || undefined,
+                    stageId: stages[0]?.id || undefined,
+                }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.message);
+            setDeal(json.data);
+            toast.success("Negócio criado!");
+        } catch (e: any) {
+            toast.error(e.message || "Erro ao criar negócio");
+        }
+    };
+
+    const handleStageClick = async (stageId: string) => {
+        if (!deal) return;
+        try {
+            const res = await fetch(`/api/crm/deals/${deal.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ stageId }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.message);
+            setDeal(json.data);
+            toast.success(`Etapa alterada para "${json.data.stage.name}"`);
+        } catch (e: any) {
+            toast.error(e.message || "Erro ao alterar etapa");
+        }
+    };
+
+    const handleSaveValue = async () => {
+        if (!deal) return;
+        try {
+            const res = await fetch(`/api/crm/deals/${deal.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ valueCents: parseReaisToCents(valueReais) }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.message);
+            setDeal(json.data);
+            toast.success("Valor atualizado!");
+        } catch (e: any) {
+            toast.error(e.message || "Erro ao salvar valor");
+        }
+    };
+
+    const handleAddNote = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!deal || !noteText.trim()) return;
+        setSavingNote(true);
+        try {
+            const res = await fetch(`/api/crm/deals/${deal.id}/notes`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: noteText.trim() }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.message);
+            setDeal((prev) => prev ? { ...prev, notes: [json.data, ...(prev.notes || [])] } : prev);
+            setNoteText("");
+            toast.success("Nota adicionada");
+        } catch (e: any) {
+            toast.error(e.message || "Erro ao adicionar nota");
+        } finally {
+            setSavingNote(false);
+        }
+    };
+
+    const upsertTicket = async (payload: Record<string, unknown>, msg?: string) => {
+        try {
+            const res = await fetch("/api/crm/tickets", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...(ticket?.id ? { id: ticket.id } : {}),
+                    sessionId,
+                    contactJid: jid,
+                    contactName,
+                    ...payload,
+                }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.message);
+            setTicket(json.data);
+            if (msg) toast.success(msg);
+        } catch (e: any) {
+            toast.error(e.message || "Erro ao atualizar atendimento");
+        }
+    };
+
+    const isBotPaused = Boolean(ticket?.botPausedUntil && new Date(ticket.botPausedUntil) > new Date());
+
+    const handleSendProductPix = async () => {
+        const prod = products.find((p) => p.id === selectedProductId);
+        if (!prod) return;
+        setSendingPix(true);
+        try {
+            const formattedPrice = (prod.priceCents / 100).toLocaleString("pt-BR", {
+                style: "currency",
+                currency: "BRL",
+            });
+            const lines = [
+                `*${prod.name}*`,
+                prod.description ? prod.description : null,
+                `Valor: *${formattedPrice}*`,
+                prod.pixKey ? `\nChave PIX: \`${prod.pixKey}\`` : null,
+            ].filter(Boolean);
+
+            await onSendPixMessage(lines.join("\n"));
+            toast.success("Produto / PIX enviado no WhatsApp!");
+        } catch (e: any) {
+            toast.error(e.message || "Falha ao enviar produto");
+        } finally {
+            setSendingPix(false);
+        }
+    };
+
+    return (
+        <aside className="w-80 sm:w-96 shrink-0 border-l border-border/60 bg-background flex flex-col min-h-0">
+            <div className="flex items-center justify-between border-b px-4 py-3 shrink-0">
+                <div className="flex items-center gap-2 font-semibold text-sm">
+                    <Briefcase className="h-4 w-4 text-primary" />
+                    CRM & Atendimento
+                </div>
+                <button type="button" onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-muted">
+                    <X className="h-4 w-4" />
+                </button>
+            </div>
+
+            {loading ? (
+                <div className="flex-1 flex items-center justify-center text-muted-foreground gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando CRM...
+                </div>
+            ) : (
+                <div className="flex-1 overflow-y-auto p-4 space-y-5 styled-scrollbar text-sm">
+                    {/* 1. Negócio & Funil */}
+                    <section className="space-y-2.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Funil de Vendas
+                            </span>
+                            {deal && (
+                                <Badge variant="outline" style={{ borderColor: deal.stage.color, color: deal.stage.color }}>
+                                    {deal.stage.name}
+                                </Badge>
+                            )}
+                        </div>
+
+                        {!deal ? (
+                            <div className="rounded-lg border bg-muted/30 p-3 space-y-2.5">
+                                <p className="text-xs text-muted-foreground">Nenhum negócio aberto para este contato.</p>
+                                <input
+                                    className="w-full rounded-md border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+                                    placeholder="Título do negócio"
+                                    value={newDealTitle}
+                                    onChange={(e) => setNewDealTitle(e.target.value)}
+                                />
+                                <div className="flex gap-2">
+                                    <input
+                                        className="w-28 rounded-md border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+                                        placeholder="R$ 0,00"
+                                        value={valueReais}
+                                        onChange={(e) => setValueReais(e.target.value)}
+                                    />
+                                    <Button size="sm" className="flex-1 h-8 text-xs" onClick={handleCreateDeal}>
+                                        <Plus className="h-3.5 w-3.5 mr-1" /> Criar Negócio
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+                                <p className="font-medium text-sm">{deal.title}</p>
+
+                                {/* 1-clique etapa */}
+                                <div className="space-y-1">
+                                    <span className="text-[11px] text-muted-foreground">Mover etapa (1 clique):</span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {stages.map((s) => {
+                                            const active = s.id === deal.stageId;
+                                            return (
+                                                <button
+                                                    key={s.id}
+                                                    type="button"
+                                                    onClick={() => handleStageClick(s.id)}
+                                                    className={cn(
+                                                        "rounded-full px-2.5 py-0.5 text-[11px] font-medium border transition",
+                                                        active ? "text-white shadow-sm" : "bg-background text-muted-foreground hover:text-foreground"
+                                                    )}
+                                                    style={active ? { backgroundColor: s.color, borderColor: s.color } : undefined}
+                                                >
+                                                    {s.name}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Valor */}
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs text-muted-foreground shrink-0">Valor (R$):</span>
+                                    <input
+                                        className="w-24 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+                                        value={valueReais}
+                                        onChange={(e) => setValueReais(e.target.value)}
+                                    />
+                                    <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={handleSaveValue}>
+                                        Salvar
+                                    </Button>
+                                </div>
+
+                                {/* Notas rápidas */}
+                                <div className="space-y-2 border-t pt-2.5">
+                                    <div className="flex items-center gap-1.5 text-xs font-medium">
+                                        <StickyNote className="h-3.5 w-3.5 text-primary" />
+                                        Notas ({deal.notes?.length || 0})
+                                    </div>
+                                    <form onSubmit={handleAddNote} className="flex gap-1.5">
+                                        <input
+                                            className="flex-1 rounded-md border bg-background px-2.5 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+                                            placeholder="Adicionar nota..."
+                                            value={noteText}
+                                            onChange={(e) => setNoteText(e.target.value)}
+                                        />
+                                        <Button type="submit" size="sm" className="h-7 px-2.5 text-xs" disabled={savingNote || !noteText.trim()}>
+                                            {savingNote ? <Loader2 className="h-3 w-3 animate-spin" /> : "Add"}
+                                        </Button>
+                                    </form>
+                                    <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                                        {(deal.notes || []).map((n) => (
+                                            <div key={n.id} className="rounded bg-background border p-2 text-[11px]">
+                                                <div className="flex justify-between text-muted-foreground mb-0.5">
+                                                    <span className="font-medium text-foreground">{n.authorName || "Equipe"}</span>
+                                                    <span>{new Date(n.createdAt).toLocaleDateString("pt-BR")}</span>
+                                                </div>
+                                                <p className="whitespace-pre-wrap">{n.content}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </section>
+
+                    {/* 2. Ticket & Pausa do Robô */}
+                    <section className="space-y-2.5 border-t pt-4">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            Atendimento & Robô
+                        </span>
+
+                        <div className="space-y-2.5 rounded-lg border bg-muted/20 p-3">
+                            <div className="space-y-1">
+                                <span className="text-[11px] text-muted-foreground">Atendente Responsável</span>
+                                <Select
+                                    value={ticket?.assignedUserId || "UNASSIGNED"}
+                                    onValueChange={(val) =>
+                                        upsertTicket(
+                                            { assignedUserId: val === "UNASSIGNED" ? null : val, status: val === "UNASSIGNED" ? "OPEN" : "IN_PROGRESS" },
+                                            "Atendente atualizado"
+                                        )
+                                    }
+                                >
+                                    <SelectTrigger className="h-8 text-xs">
+                                        <SelectValue placeholder="Selecionar atendente" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="UNASSIGNED">Sem atendente</SelectItem>
+                                        {agents.map((a) => (
+                                            <SelectItem key={a.id} value={a.id}>
+                                                {a.name || a.email}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-1">
+                                <span className="text-[11px] text-muted-foreground">Status do Ticket</span>
+                                <Select
+                                    value={ticket?.status || "OPEN"}
+                                    onValueChange={(val) => upsertTicket({ status: val }, "Status atualizado")}
+                                >
+                                    <SelectTrigger className="h-8 text-xs">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="OPEN">Aberto</SelectItem>
+                                        <SelectItem value="IN_PROGRESS">Em Atendimento</SelectItem>
+                                        <SelectItem value="WAITING_CUSTOMER">Aguardando Cliente</SelectItem>
+                                        <SelectItem value="RESOLVED">Resolvido</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1 border-t">
+                                <div className="flex items-center gap-2">
+                                    <Bot className="h-4 w-4 text-amber-600" />
+                                    <div>
+                                        <p className="text-xs font-medium">Pausar Robô (60 min)</p>
+                                        <p className="text-[10px] text-muted-foreground">
+                                            {isBotPaused ? "Pausado para atendimento humano" : "Robô/IA ativo"}
+                                        </p>
+                                    </div>
+                                </div>
+                                <Switch
+                                    checked={isBotPaused}
+                                    onCheckedChange={(checked) => {
+                                        const until = checked ? new Date(Date.now() + 60 * 60 * 1000).toISOString() : null;
+                                        upsertTicket(
+                                            { botPausedUntil: until },
+                                            checked ? "Robô pausado por 60 min" : "Robô reativado"
+                                        );
+                                    }}
+                                />
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* 3. Enviar Produto / PIX */}
+                    <section className="space-y-2.5 border-t pt-4">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                            <QrCode className="h-3.5 w-3.5 text-emerald-600" />
+                            Enviar Produto / PIX
+                        </span>
+
+                        {products.length === 0 ? (
+                            <p className="text-xs text-muted-foreground rounded-lg border border-dashed p-3">
+                                Nenhum produto ativo. Cadastre em CRM &gt; Catálogo & PIX.
+                            </p>
+                        ) : (
+                            <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                                <Select value={selectedProductId} onValueChange={setSelectedProductId}>
+                                    <SelectTrigger className="h-8 text-xs">
+                                        <SelectValue placeholder="Escolha um produto" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {products.map((p) => (
+                                            <SelectItem key={p.id} value={p.id}>
+                                                {p.name} — {(p.priceCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    className="w-full h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                                    disabled={sendingPix || !selectedProductId}
+                                    onClick={handleSendProductPix}
+                                >
+                                    {sendingPix ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1.5" />}
+                                    Enviar Cobrança PIX no Chat
+                                </Button>
+                            </div>
+                        )}
+                    </section>
+                </div>
+            )}
+        </aside>
     );
 }

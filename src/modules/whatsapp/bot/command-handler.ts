@@ -15,20 +15,19 @@ const execAsync = promisify(exec);
 // Map to track start times for uptime
 const startTimes = new Map<string, number>();
 
-// Default bot config
-// Default bot config
+// Default bot config: comandos pessoais desativados por padrão para números empresariais
 const DEFAULT_CONFIG = {
-    enabled: true,
+    enabled: false,
     botMode: 'OWNER',
     botAllowedJids: [] as string[],
     autoReplyMode: 'ALL',
     autoReplyAllowedJids: [] as string[],
-    enableSticker: true,
-    enableVideoSticker: true,
+    enableSticker: false,
+    enableVideoSticker: false,
     maxStickerDuration: 10,
-    enablePing: true,
-    enableUptime: true,
-    botName: "MarcFlow Bot",
+    enablePing: false,
+    enableUptime: false,
+    botName: "MarcFlow",
     prefix: "#",
     removeBgApiKey: null as string | null
 };
@@ -139,16 +138,23 @@ export async function handleBotCommand(
     const cmd = command.toLowerCase().slice(prefix.length); // remove prefix
 
     try {
+        // Comandos pessoais/técnicos (#ping, #uptime, #id, #sticker, #menu) ficam restritos ao próprio operador (fromMe)
+        // para nunca vazarem em atendimentos com clientes de números empresariais.
+        if (!fromMe) {
+            return;
+        }
+
         switch (cmd) {
             case "ping": {
                 if (!config.enablePing) return;
-                await sock.sendMessage(remoteJid, { text: "Pong! 🏓" }, { quoted: msg });
+                await sock.sendMessage(remoteJid, { text: "Conexão ativa." }, { quoted: msg });
                 break;
             }
 
             case "id": {
+                if (!config.enablePing && !config.enableUptime) return;
                 await sock.sendMessage(remoteJid, {
-                    text: `*Chat ID:* \`${remoteJid}\``
+                    text: `*ID do Chat:* \`${remoteJid}\``
                 }, { quoted: msg });
                 break;
             }
@@ -327,20 +333,15 @@ export async function handleBotCommand(
 
             case "menu":
             case "help": {
-                const botName = (config as any).botName || "MarcFlow Bot";
-                const menu = `
-🤖 *${botName} Menu* 🤖
+                const botName = (config as any).botName || "MarcFlow";
+                const enabledCommands: string[] = [];
+                if (config.enablePing) enabledCommands.push(`• *${prefix}ping*: Verificar status da conexão`);
+                if (config.enableUptime) enabledCommands.push(`• *${prefix}uptime*: Tempo de atividade da sessão`);
+                if (config.enableSticker) enabledCommands.push(`• *${prefix}sticker*: Converter imagem/vídeo em figurinha`);
 
-📌 *Commands:*
-• *${prefix}sticker* / *${prefix}s*: Convert Image/Video to Sticker
-  - Supports Images, GIFs, and Videos (max ${(config as any).maxStickerDuration || 10}s)
-  - Use *${prefix}sticker nobg* to remove background (Images only)
-• *${prefix}ping*: Check Bot Status
-• *${prefix}uptime*: Check Session Uptime
-• *${prefix}id*: Get Chat ID
+                if (enabledCommands.length === 0) return;
 
-_Made with ❤️_
-`;
+                const menu = `*${botName} — Comandos Internos*\n\n${enabledCommands.join("\n")}`;
                 await sock.sendMessage(remoteJid, { text: menu }, { quoted: msg });
                 break;
             }

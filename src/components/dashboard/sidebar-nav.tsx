@@ -30,7 +30,10 @@ import {
     UserPlus,
     DatabaseBackup,
     ShoppingBag,
-    Sparkles
+    Sparkles,
+    Kanban,
+    CalendarDays,
+    CreditCard
 } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 import {
@@ -59,54 +62,53 @@ export const navGroups: NavGroup[] = [
         label: "Principal",
         items: [
             { href: "/dashboard", label: "Painel", icon: LayoutDashboard },
-            { href: "/dashboard/sessions", label: "Sessões / QR", icon: QrCode },
-        ],
-    },
-    {
-        label: "Mensagens",
-        items: [
             { href: "/dashboard/chat", label: "Conversas", icon: MessageSquare },
-            { href: "/dashboard/broadcast", label: "Transmissão", icon: Megaphone },
-            { href: "/dashboard/sticker", label: "Criador de figurinhas", icon: ImageIcon },
-            { href: "/dashboard/archive", label: "Exportar conversas", icon: DatabaseBackup },
-        ],
-    },
-    {
-        label: "Contatos",
-        items: [
+            { href: "/dashboard/crm", label: "CRM & Funil", icon: Kanban },
+            { href: "/dashboard/agenda", label: "Agenda", icon: CalendarDays },
             { href: "/dashboard/contacts", label: "Contatos", icon: UserCheck },
-            { href: "/dashboard/groups", label: "Grupos", icon: Users },
-            { href: "/dashboard/labels", label: "Etiquetas", icon: Tag },
         ],
     },
     {
-        label: "Automação",
+        label: "Canais & Campanhas",
         items: [
-            { href: "/dashboard/ai-studio", label: "Estúdio IA (Flow)", icon: Sparkles },
-            { href: "/dashboard/flows", label: "Fluxos de conversa", icon: Workflow },
-            { href: "/dashboard/bot-settings", label: "Configurações do bot", icon: Bot },
-            { href: "/dashboard/autoreply", label: "Resposta automática", icon: MessageCircleReply },
-            { href: "/dashboard/affiliates", label: "Links de afiliados", icon: ShoppingBag },
-            { href: "/dashboard/profile", label: "Perfil do bot", icon: UserCircle },
-            { href: "/dashboard/scheduler", label: "Agendador", icon: CalendarClock },
-            { href: "/dashboard/webhooks", label: "Webhooks & API", icon: Webhook },
+            { href: "/dashboard/sessions", label: "Conexões WhatsApp", icon: QrCode, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/broadcast", label: "Disparos em Massa", icon: Megaphone, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/labels", label: "Etiquetas", icon: Tag, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/groups", label: "Grupos", icon: Users, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/archive", label: "Exportar Conversas", icon: DatabaseBackup, allowedRoles: ["OWNER", "SUPERADMIN"] },
         ],
     },
     {
-        label: "Desenvolvedor",
+        label: "Automação & IA",
         items: [
-            { href: "/docs", label: "Documentação da API", icon: FileText },
-            { href: "/swagger", label: "Swagger UI", icon: Code, external: true },
+            { href: "/dashboard/ai-studio", label: "Estúdio IA", icon: Sparkles, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/flows", label: "Fluxos de Conversa", icon: Workflow, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/autoreply", label: "Resposta Automática", icon: MessageCircleReply, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/bot-settings", label: "Configurações do Bot", icon: Bot, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/scheduler", label: "Agendador", icon: CalendarClock, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/affiliates", label: "Links de Afiliados", icon: ShoppingBag, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/profile", label: "Perfil do WhatsApp", icon: UserCircle, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/sticker", label: "Criador de Figurinhas", icon: ImageIcon, allowedRoles: ["OWNER", "SUPERADMIN"] },
         ],
     },
     {
-        label: "Administração",
+        label: "Empresa & Planos",
         items: [
-            { href: "/dashboard/media", label: "Gerenciador de mídia", icon: HardDrive },
-            { href: "/dashboard/sessions/access", label: "Acesso às sessões", icon: UserPlus },
-            { href: "/dashboard/users", label: "Usuários", icon: Users, superadminOnly: true },
-            { href: "/dashboard/settings", label: "Configurações", icon: Settings },
-            { href: "/dashboard/system-monitor", label: "Monitor do sistema", icon: Activity, superadminOnly: true },
+            { href: "/dashboard/team", label: "Equipe & Atendentes", icon: Users, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/plans", label: "Planos & Assinatura", icon: CreditCard, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/sessions/access", label: "Acesso às Sessões", icon: UserPlus, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/media", label: "Gerenciador de Mídia", icon: HardDrive, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/settings", label: "Configurações", icon: Settings, allowedRoles: ["OWNER", "SUPERADMIN"] },
+        ],
+    },
+    {
+        label: "Desenvolvedor & Sistema",
+        items: [
+            { href: "/dashboard/webhooks", label: "Webhooks & API", icon: Webhook, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/docs", label: "Documentação da API", icon: FileText, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/swagger", label: "Swagger UI", icon: Code, external: true, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/users", label: "Usuários do Sistema", icon: Users, superadminOnly: true },
+            { href: "/dashboard/system-monitor", label: "Monitor do Sistema", icon: Activity, superadminOnly: true },
             { href: "/dashboard/notifications", label: "Notificações", icon: Bell, superadminOnly: true },
         ],
     },

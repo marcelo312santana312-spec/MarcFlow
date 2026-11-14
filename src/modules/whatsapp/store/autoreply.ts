@@ -12,6 +12,19 @@ import {
     StoredAffiliateSettings,
 } from "@/modules/affiliate";
 
+const HUMAN_TAKEOVER_PAUSE_MS = 30 * 60_000;
+const botSentMessageIds = new Set<string>();
+
+function trackBotSent(sent: { key?: { id?: string | null } } | undefined | null) {
+    const id = sent?.key?.id;
+    if (!id) return;
+    botSentMessageIds.add(id);
+    if (botSentMessageIds.size > 500) {
+        const first = botSentMessageIds.values().next().value;
+        if (first) botSentMessageIds.delete(first);
+    }
+}
+
 // Helper for permission check (Deduplicate from command-handler if possible, but keep simple here)
 function canAutoReply(config: any, fromMe: boolean, senderJid: string): boolean {
     if (!config || !config.enabled) return false;
@@ -192,6 +205,44 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
 
             if (!remoteJid || !senderJid) continue;
 
+            const ticketJid = !isGroup && remoteJid.endsWith("@lid") && remoteJidAlt ? remoteJidAlt : remoteJid;
+
+            // Pausa automática do bot/IA por 30 min quando um humano envia mensagem (fromMe) no WhatsApp
+            if (fromMe && !isGroup && remoteJid !== "status@broadcast" && !remoteJid.endsWith("@newsletter")) {
+                const msgId = msg.key.id || "";
+                const isBotOwnMessage = msgId ? botSentMessageIds.delete(msgId) : false;
+                if (!isBotOwnMessage) {
+                    const pauseUntil = new Date(Date.now() + HUMAN_TAKEOVER_PAUSE_MS);
+                    await prisma.conversationTicket
+                        .upsert({
+                            where: { sessionId_contactJid: { sessionId: session.id, contactJid: ticketJid } },
+                            create: { sessionId: session.id, contactJid: ticketJid, botPausedUntil: pauseUntil, status: "IN_PROGRESS" },
+                            update: { botPausedUntil: pauseUntil },
+                        })
+                        .catch(() => undefined);
+                    logger.info("AutoReply", `Bot pausado por 30 min para ${ticketJid} (atendimento humano fromMe)`);
+                }
+            }
+
+            // Respeita botPausedUntil no ConversationTicket antes de responder
+            if (!fromMe && !isGroup) {
+                const candidates = [...new Set([ticketJid, remoteJid, senderJid].filter(Boolean))];
+                const pausedTicket = await prisma.conversationTicket
+                    .findFirst({
+                        where: {
+                            sessionId: session.id,
+                            contactJid: { in: candidates },
+                            botPausedUntil: { gt: new Date() },
+                        },
+                        select: { botPausedUntil: true },
+                    })
+                    .catch(() => null);
+                if (pausedTicket) {
+                    logger.debug("AutoReply", `Ignorando ${ticketJid}: bot pausado até ${pausedTicket.botPausedUntil?.toISOString()}`);
+                    continue;
+                }
+            }
+
             // Check Permissions
             if (!canAutoReply(config, fromMe, senderJid)) continue;
 
@@ -277,15 +328,18 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
                             }
                             
                             try {
-                                await sock.sendMessage(remoteJid, payload, { quoted: msg });
+                                const sent = await sock.sendMessage(remoteJid, payload, { quoted: msg });
+                                trackBotSent(sent);
                             } catch (err: any) {
                                 logger.error("AutoReply", `Failed to send media auto-reply from URL: ${err.message}. Falling back to text if response exists.`);
                                 if (rule.response) {
-                                    await sock.sendMessage(remoteJid, { text: rule.response }, { quoted: msg });
+                                    const sent = await sock.sendMessage(remoteJid, { text: rule.response }, { quoted: msg });
+                                    trackBotSent(sent);
                                 }
                             }
                         } else if (rule.response) {
-                            await sock.sendMessage(remoteJid, { text: rule.response }, { quoted: msg });
+                            const sent = await sock.sendMessage(remoteJid, { text: rule.response }, { quoted: msg });
+                            trackBotSent(sent);
                         }
 
                         break;
@@ -355,7 +409,8 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
 
                     if (aiReply) {
                         logger.info("AIAssistant", `Replied to ${remoteJid} via ${config.aiModel || "gemini-3.8-flash"}`);
-                        await sock.sendMessage(remoteJid, { text: aiReply }, { quoted: msg });
+                        const sent = await sock.sendMessage(remoteJid, { text: aiReply }, { quoted: msg });
+                        trackBotSent(sent);
                     }
                 }
 

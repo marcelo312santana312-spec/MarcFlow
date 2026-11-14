@@ -41,6 +41,7 @@ model User {
   email     String   @unique
   password  String
   role      Role     @default(OWNER)
+  ownerId   String?
   apiKey    String?  @unique // API Key for authentication
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -48,6 +49,13 @@ model User {
   sessions  Session[]
   webhooks  Webhook[]
   notifications Notification[]
+  owner           User?                  @relation("TeamMembers", fields: [ownerId], references: [id], onDelete: SetNull)
+  teamMembers     User[]                 @relation("TeamMembers")
+  subscription    Subscription?
+  pipelines       Pipeline[]
+  products        Product[]
+  appointments    Appointment[]
+  assignedTickets ConversationTicket[]
   sessionAccesses SessionAccess[]
 }
 
@@ -74,6 +82,9 @@ model Session {
   sessionAccesses SessionAccess[]
   flows       Flow[]
   archiveChats ArchiveChat[]
+  deals       Deal[]
+  tickets     ConversationTicket[]
+  appointments Appointment[]
 }
 
 model Contact {
@@ -306,7 +317,7 @@ model SystemConfig {
   appName            String   @default("MarcFlow")
   logoUrl            String?
   faviconUrl         String?
-  timezone           String   @default("Asia/Jakarta")
+  timezone           String   @default("America/Sao_Paulo")
   enableRegistration Boolean  @default(true)
   
   updatedAt          DateTime @updatedAt
@@ -728,4 +739,173 @@ model AffiliateConversion {
 
   @@index([sessionId, createdAt])
   @@index([platform, createdAt])
+}
+
+// --- SaaS Packaging & Multi-tenant Billing ---
+
+model Plan {
+  id                String   @id @default(cuid())
+  slug              String   @unique // starter, pro, enterprise
+  name              String
+  description       String?
+  priceCents        Int      @default(0)
+  maxSessions       Int      @default(1)
+  maxUsers          Int      @default(2)
+  maxBroadcastDaily Int      @default(100)
+  hasAiStudio       Boolean  @default(false)
+  hasCrm            Boolean  @default(true)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  subscriptions     Subscription[]
+}
+
+model Subscription {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  planId           String
+  status           String    @default("TRIAL") // TRIAL, ACTIVE, PAST_DUE, CANCELED, EXPIRED
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  externalRef      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan             Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+}
+
+// --- B2B CRM, Sales Funnel & Tickets ---
+
+model Pipeline {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stages    PipelineStage[]
+  deals     Deal[]
+
+  @@index([userId])
+}
+
+model PipelineStage {
+  id         String   @id @default(cuid())
+  pipelineId String
+  name       String
+  color      String   @default("#3B82F6")
+  order      Int      @default(0)
+  isWon      Boolean  @default(false)
+  isLost     Boolean  @default(false)
+
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  deals      Deal[]
+
+  @@index([pipelineId, order])
+}
+
+model Deal {
+  id                String    @id @default(cuid())
+  pipelineId        String
+  stageId           String
+  sessionId         String
+  contactJid        String
+  contactName       String?
+  contactPhone      String?
+  title             String
+  valueCents        Int       @default(0)
+  status            String    @default("OPEN") // OPEN, WON, LOST
+  followUpAt        DateTime?
+  followUpCount     Int       @default(0)
+  lastInteractionAt DateTime  @default(now())
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  pipeline          Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  stage             PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  session           Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  notes             DealNote[]
+
+  @@index([sessionId, contactJid])
+  @@index([pipelineId, stageId])
+}
+
+model DealNote {
+  id         String   @id @default(cuid())
+  dealId     String
+  authorName String?
+  content    String   @db.Text
+  createdAt  DateTime @default(now())
+
+  deal       Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+}
+
+model ConversationTicket {
+  id             String    @id @default(cuid())
+  sessionId      String
+  contactJid     String
+  contactName    String?
+  assignedUserId String?
+  status         String    @default("OPEN") // OPEN, IN_PROGRESS, WAITING_CUSTOMER, RESOLVED
+  priority       String    @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  botPausedUntil DateTime?
+  slaDueAt       DateTime?
+  lastMessageAt  DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  session        Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  assignedUser   User?     @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, contactJid])
+  @@index([status, assignedUserId])
+}
+
+// --- Product Catalog & PIX Quick Send ---
+
+model Product {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  description String?  @db.Text
+  priceCents  Int      @default(0)
+  pixKey      String?
+  imageUrl    String?  @db.Text
+  category    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+// --- Appointment Agenda & Reminders ---
+
+model Appointment {
+  id              String   @id @default(cuid())
+  userId          String
+  sessionId       String
+  contactJid      String
+  contactName     String?
+  title           String
+  notes           String?  @db.Text
+  scheduledAt     DateTime
+  durationMin     Int      @default(60)
+  status          String   @default("SCHEDULED") // SCHEDULED, CONFIRMED, COMPLETED, CANCELED, NO_SHOW
+  reminder24hSent Boolean  @default(false)
+  reminder2hSent  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, scheduledAt])
+  @@index([userId, scheduledAt])
 }

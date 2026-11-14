@@ -350,6 +350,123 @@ async function runAction(ctx: Ctx, nodeId: string, a: FlowAction, vars: Record<s
             // same list the broadcast sender checks ("Pular quem pediu para sair")
             await prisma.broadcastOptOut.upsert({ where: { sessionId_jid: { sessionId: ctx.sessionId, jid: ctx.jid } }, create: { sessionId: ctx.sessionId, jid: ctx.jid }, update: {} });
             return log(ctx.run.id, nodeId, "ACTION", { optOut: true });
+
+        case "ai_qualifier": {
+            const botCfg = await prisma.botConfig.findUnique({
+                where: { sessionId: ctx.dbSessionId },
+                select: { aiApiKey: true, aiModel: true },
+            });
+            const prompt = renderTemplate(a.systemPrompt || "", vars);
+            const recent = await prisma.message.findMany({
+                where: { sessionId: ctx.dbSessionId, remoteJid: ctx.jid, content: { not: null } },
+                orderBy: { timestamp: "desc" },
+                take: 8,
+                select: { fromMe: true, content: true },
+            });
+            const historyText = recent
+                .reverse()
+                .map(m => `${m.fromMe ? "Atendente" : "Cliente"}: ${m.content}`)
+                .join("\n");
+            const userInput = `Histórico recente:\n${historyText || "(sem histórico)"}\n\nÚltima mensagem: ${ctx.lastText || "(vazia)"}`;
+
+            const configuredModel = (a.model || botCfg?.aiModel || "").trim();
+            const isOpenAi =
+                a.provider === "openai" ||
+                (a.provider !== "gemini" && /^(gpt-|o1|o3|o4)/i.test(configuredModel)) ||
+                (a.provider !== "gemini" && !botCfg?.aiApiKey && !process.env.GEMINI_API_KEY && !!process.env.OPENAI_API_KEY);
+
+            let aiOutput = "";
+            if (isOpenAi) {
+                const openAiKey = (botCfg?.aiApiKey?.startsWith("sk-") ? botCfg.aiApiKey : "") || process.env.OPENAI_API_KEY || "";
+                if (openAiKey) {
+                    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${openAiKey}` },
+                        body: JSON.stringify({
+                            model: configuredModel || "gpt-4o-mini",
+                            messages: [
+                                { role: "system", content: prompt },
+                                { role: "user", content: userInput },
+                            ],
+                            temperature: 0.4,
+                        }),
+                        signal: AbortSignal.timeout(15_000),
+                    });
+                    if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
+                    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+                    aiOutput = json.choices?.[0]?.message?.content?.trim() || "";
+                }
+            } else {
+                const geminiKey = (botCfg?.aiApiKey && !botCfg.aiApiKey.startsWith("sk-") ? botCfg.aiApiKey : "") || process.env.GEMINI_API_KEY || "";
+                if (geminiKey) {
+                    const { GoogleGenAI } = await import("@google/genai");
+                    const ai = new GoogleGenAI({ apiKey: geminiKey });
+                    const response = await ai.models.generateContent({
+                        model: configuredModel || "gemini-2.5-flash",
+                        contents: [{ role: "user", parts: [{ text: userInput }] }],
+                        config: { systemInstruction: prompt },
+                    });
+                    aiOutput = response.text?.trim() || "";
+                }
+            }
+
+            if (!aiOutput && isSimJid(ctx.jid)) {
+                aiOutput = `[Simulação IA] Lead qualificado para ${vars["nome-completo"] || ctx.jid}.`;
+            }
+
+            if (aiOutput && a.saveFieldKey) {
+                await setField(ctx, a.saveFieldKey, a.saveFieldScope || "CONTACT", aiOutput);
+                vars[a.saveFieldKey] = aiOutput;
+            }
+            if (aiOutput && a.replyToContact) {
+                await send(ctx, nodeId, { text: aiOutput }, aiOutput.slice(0, 80));
+            }
+            return log(ctx.run.id, nodeId, "ACTION", {
+                ai_qualifier: true,
+                provider: isOpenAi ? "openai" : "gemini",
+                savedTo: a.saveFieldKey || null,
+                replied: !!a.replyToContact,
+                hasOutput: !!aiOutput,
+            });
+        }
+
+        case "http_request": {
+            const url = renderTemplate(a.url || "", vars).trim();
+            if (!url) throw new Error("URL HTTP vazia");
+            let headers: Record<string, string> = { "Content-Type": "application/json" };
+            if (a.headersJson?.trim()) {
+                try {
+                    const parsed = JSON.parse(renderTemplate(a.headersJson, vars));
+                    if (parsed && typeof parsed === "object") headers = { ...headers, ...parsed };
+                } catch {
+                    throw new Error("Cabeçalhos JSON inválidos na requisição HTTP");
+                }
+            }
+            const method = a.method || "POST";
+            const body = method !== "GET" && a.bodyJson?.trim() ? renderTemplate(a.bodyJson, vars) : undefined;
+
+            if (isSimJid(ctx.jid)) {
+                const simResp = JSON.stringify({ ok: true, simulated: true, method, url });
+                if (a.saveFieldKey) {
+                    await setField(ctx, a.saveFieldKey, a.saveFieldScope || "CONTACT", simResp);
+                    vars[a.saveFieldKey] = simResp;
+                }
+                return log(ctx.run.id, nodeId, "ACTION", { http_request: true, simulated: true, method, url });
+            }
+
+            const res = await fetch(url, {
+                method,
+                headers,
+                body,
+                signal: AbortSignal.timeout(10_000),
+            });
+            const respText = (await res.text().catch(() => "")).slice(0, 2000);
+            if (a.saveFieldKey) {
+                await setField(ctx, a.saveFieldKey, a.saveFieldScope || "CONTACT", respText);
+                vars[a.saveFieldKey] = respText;
+            }
+            return log(ctx.run.id, nodeId, "ACTION", { http_request: true, method, url, status: res.status });
+        }
     }
 }
 

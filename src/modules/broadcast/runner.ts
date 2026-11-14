@@ -10,6 +10,59 @@ export const MIN_INTERVAL_MS = 2_000;
 export const MAX_INTERVAL_MS = 60 * 60_000;
 export const clampInterval = (ms: number) => Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, Math.round(ms || 0)));
 
+/** Anti-ban: aplica variação aleatória de ±30% sobre o intervalo configurado. */
+export function jitteredIntervalMs(baseMs: number): number {
+    const clamped = clampInterval(baseMs);
+    const factor = 0.7 + Math.random() * 0.6;
+    return Math.max(MIN_INTERVAL_MS, Math.round(clamped * factor));
+}
+
+/** Resolve blocos Spintax como {Oi|Olá|Tudo bem} sem afetar variáveis {{nome}}. */
+export function applySpintax(text: string): string {
+    if (!text) return "";
+    return text.replace(/\{([^{}]*\|[^{}]*)\}/g, (_, opts: string) => {
+        const parts = opts.split("|");
+        return parts[Math.floor(Math.random() * parts.length)] ?? "";
+    });
+}
+
+/** Verifica se o horário atual em Brasília (BRT) está entre 08:00 e 19:59. */
+export function isWithinBusinessHoursBrt(date = new Date()): boolean {
+    const hourStr = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Sao_Paulo",
+        hour: "numeric",
+        hour12: false,
+    }).format(date);
+    const hour = Number(hourStr);
+    return !Number.isNaN(hour) && hour >= 8 && hour < 20;
+}
+
+/** Calcula taxa de resposta com base em mensagens recebidas após o início da campanha. */
+export async function getBroadcastResponseStats(logId: string): Promise<{ sent: number; replied: number; responseRate: number }> {
+    const log = await prisma.broadcastLog.findUnique({ where: { id: logId }, select: { sessionId: true, startedAt: true, sent: true } });
+    if (!log || log.sent === 0) return { sent: log?.sent ?? 0, replied: 0, responseRate: 0 };
+    const session = await prisma.session.findUnique({ where: { sessionId: log.sessionId }, select: { id: true } });
+    if (!session) return { sent: log.sent, replied: 0, responseRate: 0 };
+    const sentRows = await prisma.broadcastRecipient.findMany({
+        where: { broadcastLogId: logId, status: "sent" },
+        select: { jid: true },
+    });
+    const jids = sentRows.map(r => r.jid);
+    if (!jids.length) return { sent: log.sent, replied: 0, responseRate: 0 };
+    const repliedRows = await prisma.message.groupBy({
+        by: ["remoteJid"],
+        where: {
+            sessionId: session.id,
+            fromMe: false,
+            remoteJid: { in: jids },
+            timestamp: { gte: log.startedAt },
+        },
+    });
+    const replied = repliedRows.length;
+    const responseRate = Math.round((replied / jids.length) * 100);
+    return { sent: jids.length, replied, responseRate };
+}
+
 const g = global as unknown as { __broadcastRunning?: Set<string> };
 const running = (g.__broadcastRunning ??= new Set());
 
@@ -21,8 +74,10 @@ async function emit(logId: string, extra: Record<string, unknown> = {}) {
     if (!log) return;
     const skipped = await prisma.broadcastRecipient.count({ where: { broadcastLogId: logId, status: "skipped" } });
     const done = log.sent + log.failed + skipped;
+    const stats = log.sent > 0 ? await getBroadcastResponseStats(logId).catch(() => ({ replied: 0, responseRate: 0 })) : { replied: 0, responseRate: 0 };
     io()?.to(log.sessionId).emit("broadcast.progress", {
         broadcastId: log.id, status: log.status, total: log.total, sent: log.sent, failed: log.failed, skipped, name: log.name,
+        replied: stats.replied, responseRate: stats.responseRate,
         progress: log.total ? Math.round((done / log.total) * 100) : 100, delay: log.delay, ...extra,
     });
 }
@@ -39,7 +94,7 @@ async function sendOne(sock: WASocket, log: LogRow, jid: string) {
         dbSessionIds.set(log.sessionId, dbId);
     }
     const contact = await prisma.contact.findUnique({ where: { sessionId_jid: { sessionId: dbId, jid } }, select: { name: true, notify: true, verifiedName: true } });
-    const text = renderBroadcast(log.message, { jid, name: contact?.name || contact?.notify || contact?.verifiedName });
+    const text = applySpintax(renderBroadcast(log.message, { jid, name: contact?.name || contact?.notify || contact?.verifiedName }));
     if (!log.mediaAssetId) return void await sock.sendMessage(jid, { text });
 
     const asset = await prisma.flowAsset.findFirst({ where: { id: log.mediaAssetId, sessionId: dbId } });
@@ -77,6 +132,11 @@ export async function runBroadcast(logId: string) {
         for (;;) {
             const log = await prisma.broadcastLog.findUnique({ where: { id: logId } });
             if (!log || log.status !== "running") break;
+            if (log.name?.includes("[08h-20h]") && !isWithinBusinessHoursBrt()) {
+                await prisma.broadcastLog.update({ where: { id: logId }, data: { status: "paused" } });
+                await emit(logId, { reason: "Fora do horário comercial (08h–20h BRT). Retome a partir das 08h." });
+                break;
+            }
             const next = await prisma.broadcastRecipient.findFirst({ where: { broadcastLogId: logId, status: "pending" }, orderBy: { id: "asc" } });
             if (!next) {
                 await prisma.broadcastLog.update({ where: { id: logId }, data: { status: "completed", completedAt: new Date() } });
@@ -114,7 +174,7 @@ export async function runBroadcast(logId: string) {
             }
             await emit(logId, { current: next.jid });
             const more = await prisma.broadcastRecipient.count({ where: { broadcastLogId: logId, status: "pending" } });
-            if (more) await waitInterval(logId, clampInterval(log.delay));
+            if (more) await waitInterval(logId, jitteredIntervalMs(log.delay));
         }
     } catch (e) {
         logger.error("Broadcast", `runner ${logId} failed`, e);

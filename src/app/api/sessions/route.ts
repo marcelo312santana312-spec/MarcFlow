@@ -2,6 +2,7 @@ import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUser, getAccessibleSessions } from "@/lib/api-auth";
+import { checkPlanLimit } from "@/lib/subscription";
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +35,20 @@ export async function POST(request: NextRequest) {
         const { name, sessionId } = body;
 
         if (!name) {
-            return NextResponse.json({ status: false, message: "Session name is required", error: "Session name is required" }, { status: 400 });
+            return NextResponse.json({ status: false, message: "Nome da sessão é obrigatório", error: "Session name is required" }, { status: 400 });
+        }
+
+        const limitCheck = await checkPlanLimit(user.id, "sessions");
+        if (!limitCheck.allowed) {
+            return NextResponse.json(
+                {
+                    status: false,
+                    message: limitCheck.reason || "Limite de conexões WhatsApp atingido no seu plano atual.",
+                    error: limitCheck.reason || "Plan limit reached",
+                    code: "PLAN_LIMIT_REACHED",
+                },
+                { status: 403 }
+            );
         }
 
         // Create session for the authenticated user

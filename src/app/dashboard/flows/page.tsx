@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Check, ChevronLeft, ChevronRight, Copy, FileText, Loader2, MoreVertical, Pause, Pencil, Play, Plus, Search, SlidersHorizontal, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, FileText, Loader2, MoreVertical, Pause, Pencil, Play, Plus, Search, SlidersHorizontal, Sparkles, Trash2, Workflow, type LucideIcon } from "lucide-react";
+import { FLOW_TEMPLATES, type FlowTemplate } from "@/modules/flows/templates";
 import { useSession } from "@/components/dashboard/session-provider";
 import { SessionGuard } from "@/components/dashboard/session-guard";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,8 @@ export default function FlowsPage() {
     const [flows, setFlows] = useState<FlowRow[]>([]);
     const [loading, setLoading] = useState(false);
     const [createOpen, setCreateOpen] = useState(false);
+    const [templatesOpen, setTemplatesOpen] = useState(false);
+    const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null);
     const [name, setName] = useState("");
     const [busy, setBusy] = useState(false);
     const [toDelete, setToDelete] = useState<FlowRow | null>(null);
@@ -88,6 +91,53 @@ export default function FlowsPage() {
         if (flow) router.push(`/dashboard/flows/${flow.id}`);
     };
 
+    const createFromTemplate = async (tpl: FlowTemplate) => {
+        if (!sessionId || creatingTemplateId) return;
+        setCreatingTemplateId(tpl.id);
+        try {
+            const createRes = await fetch(`/api/flows/${sessionId}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: tpl.name }),
+            });
+            const createJson = await createRes.json().catch(() => ({}));
+            if (!createRes.ok || !createJson.data?.id) {
+                throw new Error(createJson.message || "Falha ao criar fluxo");
+            }
+            const flowId = createJson.data.id as string;
+            const revision = Number(createJson.data.draftRevision ?? 0);
+
+            const draftRes = await fetch(`/api/flows/${sessionId}/${flowId}/draft`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ graph: tpl.graph, revision }),
+            });
+            if (!draftRes.ok) {
+                const draftJson = await draftRes.json().catch(() => ({}));
+                throw new Error(draftJson.message || "Falha ao salvar blocos do template");
+            }
+
+            await fetch(`/api/flows/${sessionId}/${flowId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ triggers: [tpl.trigger] }),
+            });
+
+            await fetch(`/api/flows/${sessionId}/${flowId}/publish`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+            });
+
+            toast.success(`Template "${tpl.niche}" criado e ativado!`);
+            setTemplatesOpen(false);
+            router.push(`/dashboard/flows/${flowId}`);
+        } catch (err) {
+            toast.error((err as Error).message || "Erro ao aplicar template");
+        } finally {
+            setCreatingTemplateId(null);
+        }
+    };
+
     const toggle = async (f: FlowRow) => {
         const status = f.status === "ACTIVE" ? "PAUSED" : "ACTIVE";
         if (await call(`/api/flows/${sessionId}/${f.id}`, { method: "PATCH", body: JSON.stringify({ status }) }, status === "ACTIVE" ? "Fluxo ativado" : "Fluxo pausado")) load();
@@ -124,9 +174,14 @@ export default function FlowsPage() {
                         <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-[40px] sm:leading-[1.1]">Fluxos de conversa</h1>
                         <p className="mt-2 text-[17px] text-muted-foreground">Crie jornadas automáticas e organize suas conversas.</p>
                     </div>
-                    <Button onClick={openCreate} className="h-12 rounded-xl bg-gradient-to-b from-[#12704A] to-[#0B5236] px-6 text-[16px] font-semibold text-white shadow-md hover:brightness-110">
-                        <Plus className="h-5 w-5" /> Criar fluxo
-                    </Button>
+                    <div className="flex flex-wrap gap-3">
+                        <Button variant="outline" onClick={() => setTemplatesOpen(true)} className="h-12 rounded-xl border-[#12A35E]/40 px-5 text-[15px] font-semibold text-[#0E8A4F] hover:bg-[#E7F6EE]">
+                            <Sparkles className="h-5 w-5" /> Usar Template de Nicho
+                        </Button>
+                        <Button onClick={openCreate} className="h-12 rounded-xl bg-gradient-to-b from-[#12704A] to-[#0B5236] px-6 text-[16px] font-semibold text-white shadow-md hover:brightness-110">
+                            <Plus className="h-5 w-5" /> Criar fluxo
+                        </Button>
+                    </div>
                 </div>
 
                 <div className="grid grid-cols-1 divide-y divide-border/70 rounded-2xl border border-border/70 bg-card shadow-sm sm:grid-cols-3 sm:divide-x sm:divide-y-0">
@@ -255,6 +310,39 @@ export default function FlowsPage() {
                     )}
                 </div>
             </div>
+
+            <Dialog open={templatesOpen} onOpenChange={o => !creatingTemplateId && setTemplatesOpen(o)}>
+                <DialogContent className="sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2"><Sparkles className="h-5 w-5 text-[#0E8A4F]" /> Templates de Nicho (1 Clique)</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-sm text-muted-foreground">Escolha um fluxo pronto de alta conversão. Ele será criado, configurado com gatilho e publicado automaticamente.</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        {FLOW_TEMPLATES.map(tpl => {
+                            const isBusy = creatingTemplateId === tpl.id;
+                            return (
+                                <div key={tpl.id} className="flex flex-col justify-between rounded-xl border border-border/80 bg-card p-4 transition-colors hover:border-[#12A35E]/50">
+                                    <div>
+                                        <div className="flex items-center justify-between gap-2">
+                                            <span className="text-sm font-bold text-foreground">{tpl.niche}</span>
+                                            <span className="rounded-full bg-[#E7F6EE] px-2.5 py-0.5 text-[11px] font-semibold text-[#0E8A4F]">{tpl.badge}</span>
+                                        </div>
+                                        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{tpl.description}</p>
+                                    </div>
+                                    <Button
+                                        onClick={() => createFromTemplate(tpl)}
+                                        disabled={!!creatingTemplateId}
+                                        className="mt-4 h-9 w-full rounded-lg bg-[#0E8A4F] text-white hover:bg-[#0B7442]"
+                                    >
+                                        {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                                        {isBusy ? "Criando fluxo..." : "Usar este template"}
+                                    </Button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={createOpen} onOpenChange={setCreateOpen}>
                 <DialogContent>
