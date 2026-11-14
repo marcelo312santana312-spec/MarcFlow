@@ -303,7 +303,7 @@ import os
 os.environ["HF_HOME"] = "/content/hf_cache"
 os.makedirs(os.environ["HF_HOME"], exist_ok=True)
 
-!pip install -q -U diffusers transformers accelerate sentencepiece ftfy imageio[ffmpeg] fastapi uvicorn
+!pip install -q -U diffusers transformers accelerate sentencepiece protobuf ftfy imageio[ffmpeg] fastapi uvicorn
 !wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
 
 import io, re, time, base64, tempfile, threading, subprocess, torch
