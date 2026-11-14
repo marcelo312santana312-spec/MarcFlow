@@ -1315,14 +1315,41 @@ uvicorn.run(app, host="0.0.0.0", port=8000)`;
                     <div className="space-y-4 py-2">
                         <div className="rounded-lg border bg-slate-50 dark:bg-slate-900 p-3 space-y-2">
                             <p className="text-xs font-semibold">Passo 1: Copie e rode este código em uma célula do Google Colab (com GPU A100/L4):</p>
+                            <textarea
+                                id="colab-cell-script-box"
+                                readOnly
+                                value={colabCellScript}
+                                rows={4}
+                                onFocus={(e) => e.currentTarget.select()}
+                                className="w-full rounded-md border bg-white dark:bg-slate-950 p-2 font-mono text-[10px] text-slate-700 dark:text-slate-300 resize-none"
+                            />
                             <Button
                                 type="button"
                                 variant="secondary"
                                 size="sm"
                                 className="w-full"
-                                onClick={() => {
-                                    navigator.clipboard.writeText(colabCellScript);
-                                    toast.success("Código do Colab copiado! Cole em uma célula do Colab e execute.");
+                                onClick={async () => {
+                                    const box = document.getElementById("colab-cell-script-box") as HTMLTextAreaElement | null;
+                                    let copied = false;
+                                    try {
+                                        if (navigator.clipboard?.writeText) {
+                                            await navigator.clipboard.writeText(colabCellScript);
+                                            copied = true;
+                                        }
+                                    } catch {}
+                                    if (!copied && box) {
+                                        box.focus();
+                                        box.select();
+                                        box.setSelectionRange(0, colabCellScript.length);
+                                        try {
+                                            copied = document.execCommand("copy");
+                                        } catch {}
+                                    }
+                                    if (copied) {
+                                        toast.success("Código do Colab copiado! Cole em uma célula do Colab e execute.");
+                                    } else {
+                                        toast.info("Selecione o código na caixa acima e pressione Ctrl+C para copiar.");
+                                    }
                                 }}
                             >
                                 Copiar Código da Célula do Colab
