@@ -299,7 +299,7 @@ export default function AiStudioPage() {
     };
 
     const colabCellScript = `# === MARCFLOW COLAB GPU VIDEO SERVER (A100 / L4 / T4) ===
-!pip install -q -U diffusers transformers accelerate sentencepiece ftfy imageio[ffmpeg] fastapi uvicorn nest_asyncio
+!pip install -q -U diffusers transformers accelerate sentencepiece ftfy imageio[ffmpeg] fastapi uvicorn
 !wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
 
 import os, io, re, time, base64, tempfile, threading, subprocess, torch
@@ -309,7 +309,7 @@ from pydantic import BaseModel
 from PIL import Image
 from diffusers import AutoencoderKLWan, WanPipeline, WanImageToVideoPipeline
 from diffusers.utils import export_to_video
-import uvicorn, nest_asyncio
+import uvicorn
 
 gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 vram_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if torch.cuda.is_available() else 0
@@ -373,8 +373,9 @@ def start_tunnel():
             print("="*60 + "\\n")
 
 threading.Thread(target=start_tunnel, daemon=True).start()
-nest_asyncio.apply()
-uvicorn.run(app, host="0.0.0.0", port=8000)`;
+config = uvicorn.Config(app, host="0.0.0.0", port=8000)
+server = uvicorn.Server(config)
+await server.serve()`;
 
     const handleEnhancePrompt = async () => {
         if (!selectedSession) return;
