@@ -344,11 +344,15 @@ print(f"GPU detectada: {gpu_name} ({vram_gb:.1f} GB VRAM) | Cache: {os.environ['
 MODEL_T2V = "Wan-AI/Wan2.1-T2V-14B-Diffusers" if vram_gb >= 38 else "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 print(f"Carregando modelo: {MODEL_T2V} ...")
 
-vae = AutoencoderKLWan.from_pretrained(MODEL_T2V, subfolder="vae", torch_dtype=torch.float32)
-pipe_t2v = WanPipeline.from_pretrained(MODEL_T2V, vae=vae, torch_dtype=torch.bfloat16)
-pipe_t2v.enable_model_cpu_offload()
-if hasattr(pipe_t2v.vae, "enable_tiling"): pipe_t2v.vae.enable_tiling()
-if hasattr(pipe_t2v.vae, "enable_slicing"): pipe_t2v.vae.enable_slicing()
+def _load_t2v():
+    vae = AutoencoderKLWan.from_pretrained(MODEL_T2V, subfolder="vae", torch_dtype=torch.float32)
+    p = WanPipeline.from_pretrained(MODEL_T2V, vae=vae, torch_dtype=torch.bfloat16)
+    p.enable_model_cpu_offload()
+    if hasattr(p.vae, "enable_tiling"): p.vae.enable_tiling()
+    if hasattr(p.vae, "enable_slicing"): p.vae.enable_slicing()
+    return p
+
+pipe_t2v = _load_t2v()
 pipe_i2v = None
 
 app = FastAPI()
@@ -366,13 +370,18 @@ def health():
     return {"ok": True, "gpu": gpu_name, "vram_gb": round(vram_gb, 1), "model": MODEL_T2V}
 
 def _render_video_sync(req: GenReq) -> bytes:
-    global pipe_i2v
+    global pipe_t2v, pipe_i2v
     with gpu_lock:
         w, h = (480, 832) if req.aspect_ratio == "9:16" else (832, 480)
         num_frames = 97  # 97 frames a 10 fps = ~10 segundos sem estourar RAM/VRAM na L4
         neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
 
         if req.image_base64 and vram_gb >= 38:
+            if pipe_t2v is not None:
+                del pipe_t2v
+                pipe_t2v = None
+                gc.collect()
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
             if pipe_i2v is None:
                 i2v_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
                 vae_i2v = AutoencoderKLWan.from_pretrained(i2v_id, subfolder="vae", torch_dtype=torch.float32)
@@ -381,8 +390,13 @@ def _render_video_sync(req: GenReq) -> bytes:
                 if hasattr(pipe_i2v.vae, "enable_tiling"): pipe_i2v.vae.enable_tiling()
             img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((w, h))
-            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=18).frames[0]
         elif req.image_base64 and vram_gb >= 14:
+            if pipe_t2v is not None:
+                del pipe_t2v
+                pipe_t2v = None
+                gc.collect()
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
             if pipe_i2v is None:
                 pipe_i2v = LTXImageToVideoPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=torch.bfloat16)
                 pipe_i2v.enable_model_cpu_offload()
@@ -390,8 +404,15 @@ def _render_video_sync(req: GenReq) -> bytes:
             lw, lh = (512, 768) if req.aspect_ratio == "9:16" else (768, 512)
             img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
-            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=30).frames[0]
+            frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=24).frames[0]
         else:
+            if pipe_i2v is not None:
+                del pipe_i2v
+                pipe_i2v = None
+                gc.collect()
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+            if pipe_t2v is None:
+                pipe_t2v = _load_t2v()
             frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=18).frames[0]
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:

@@ -640,14 +640,25 @@ async function generateColabGpuVideo(
                 const jobId = String(startJson.job_id);
                 pushStudioLog("INFO", `Colab GPU: renderização iniciada em segundo plano (job ${jobId})...`);
                 const maxPolls = 240; // ~16 minutos (suporta Wan 2.1 14B na A100 com folga)
+                let consecutiveErrors = 0;
                 for (let i = 0; i < maxPolls; i++) {
                     await new Promise((r) => setTimeout(r, 4000));
-                    const { stdout: statusOut } = await execFileAsync(
-                        "curl",
-                        ["-4", "-fsSL", "--max-time", "15", `${colabUrl}/job/${encodeURIComponent(jobId)}`],
-                        { encoding: "utf8" }
-                    );
-                    const st = JSON.parse(statusOut || "{}");
+                    let st: any = null;
+                    try {
+                        const { stdout: statusOut } = await execFileAsync(
+                            "curl",
+                            ["-4", "-fsSL", "--max-time", "15", `${colabUrl}/job/${encodeURIComponent(jobId)}`],
+                            { encoding: "utf8" }
+                        );
+                        st = JSON.parse(statusOut || "{}");
+                        consecutiveErrors = 0;
+                    } catch (pollErr: any) {
+                        consecutiveErrors++;
+                        if (consecutiveErrors >= 5) {
+                            throw pollErr;
+                        }
+                        continue;
+                    }
                     if (st?.status === "done") {
                         await execFileAsync(
                             "curl",
