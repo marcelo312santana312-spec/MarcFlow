@@ -33,6 +33,7 @@ import {
     CheckCircle2,
     Smartphone,
     Square,
+    Terminal,
     Monitor,
     Play,
     Film,
@@ -116,6 +117,8 @@ export default function AiStudioPage() {
     const [colabUrlInput, setColabUrlInput] = useState("");
     const [showColabModal, setShowColabModal] = useState(false);
     const [savingColab, setSavingColab] = useState(false);
+    const [showLogsModal, setShowLogsModal] = useState(false);
+    const [studioLogs, setStudioLogs] = useState<Array<{ id: number; time: string; level: string; message: string }>>([]);
 
     const [items, setItems] = useState<AiStudioMediaItem[]>([]);
     const [galleryFilter, setGalleryFilter] = useState<"ALL" | "image" | "video">("ALL");
@@ -175,6 +178,25 @@ export default function AiStudioPage() {
         fetchTargetsAndAffiliates(selectedSession);
         fetchProviderStatus(selectedSession);
     }, [selectedSession]);
+
+    const fetchStudioLogs = async (sessionId: string) => {
+        try {
+            const res = await fetch(`/api/ai-studio/${sessionId}?status=logs`);
+            const json = await res.json();
+            if (json.status && Array.isArray(json.data?.logs)) {
+                setStudioLogs(json.data.logs);
+            }
+        } catch {}
+    };
+
+    useEffect(() => {
+        if (!showLogsModal || !selectedSession) return;
+        fetchStudioLogs(selectedSession);
+        const timer = setInterval(() => {
+            fetchStudioLogs(selectedSession);
+        }, 1500);
+        return () => clearInterval(timer);
+    }, [showLogsModal, selectedSession]);
 
     const fetchProviderStatus = async (sessionId: string) => {
         setLoadingProviders(true);
@@ -631,7 +653,16 @@ await server.serve()`;
                     </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowLogsModal(true)}
+                        className="gap-1.5"
+                    >
+                        <Terminal className="h-4 w-4 text-slate-600" />
+                        Logs em Tempo Real
+                    </Button>
                     <Badge
                         variant={hasApiKey ? "default" : "destructive"}
                         className={
@@ -1398,6 +1429,79 @@ await server.serve()`;
                             {savingColab ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
                             Salvar Conexão Colab
                         </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal 1C: Logs de Execução em Tempo Real */}
+            <Dialog open={showLogsModal} onOpenChange={setShowLogsModal}>
+                <DialogContent className="sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Terminal className="h-5 w-5 text-emerald-600" />
+                            Logs de Execução do Estúdio IA (Tempo Real)
+                        </DialogTitle>
+                        <DialogDescription>
+                            Acompanhe exatamente qual servidor gerou o vídeo (Colab GPU, Nuvem Grátis, Veo ou FFmpeg) e veja erros em tempo real.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="rounded-lg border bg-slate-950 text-slate-100 p-3 h-80 overflow-y-auto font-mono text-xs space-y-1.5">
+                        {studioLogs.length === 0 ? (
+                            <p className="text-slate-400">Nenhum log registrado nesta sessão ainda. Gere uma imagem ou vídeo para acompanhar aqui.</p>
+                        ) : (
+                            studioLogs.map((log) => (
+                                <div key={log.id} className="flex items-start gap-2 leading-relaxed">
+                                    <span className="text-slate-500 shrink-0">{log.time}</span>
+                                    <span
+                                        className={`shrink-0 font-bold ${
+                                            log.level === "OK"
+                                                ? "text-emerald-400"
+                                                : log.level === "WARN"
+                                                  ? "text-amber-400"
+                                                  : log.level === "ERROR"
+                                                    ? "text-rose-400"
+                                                    : "text-sky-400"
+                                        }`}
+                                    >
+                                        [{log.level}]
+                                    </span>
+                                    <span className="break-all">{log.message}</span>
+                                </div>
+                            ))
+                        )}
+                    </div>
+
+                    <DialogFooter className="flex items-center justify-between gap-2">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                                if (!selectedSession) return;
+                                await fetch(`/api/ai-studio/${selectedSession}`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "clear-logs" }),
+                                });
+                                setStudioLogs([]);
+                            }}
+                        >
+                            Limpar Logs
+                        </Button>
+                        <div className="flex gap-2">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => selectedSession && fetchStudioLogs(selectedSession)}
+                            >
+                                Atualizar Agora
+                            </Button>
+                            <Button size="sm" onClick={() => setShowLogsModal(false)}>
+                                Fechar
+                            </Button>
+                        </div>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

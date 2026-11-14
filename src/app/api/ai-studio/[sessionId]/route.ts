@@ -539,6 +539,32 @@ type ProviderHealth = {
 
 const providerQuotaCache: Record<string, { status: "online" | "limited" | "exhausted" | "offline"; detail: string; updatedAt: number }> = {};
 
+type StudioLogEntry = {
+    id: number;
+    time: string;
+    level: "INFO" | "OK" | "WARN" | "ERROR";
+    message: string;
+};
+
+const studioExecutionLogs: StudioLogEntry[] = [];
+let studioLogSeq = 1;
+
+function pushStudioLog(level: "INFO" | "OK" | "WARN" | "ERROR", message: string) {
+    const time = new Date().toLocaleTimeString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+    });
+    studioExecutionLogs.push({ id: studioLogSeq++, time, level, message });
+    if (studioExecutionLogs.length > 150) {
+        studioExecutionLogs.splice(0, studioExecutionLogs.length - 150);
+    }
+    if (level === "ERROR") logger.error("AiStudio", message);
+    else if (level === "WARN") logger.warn("AiStudio", message);
+    else logger.info("AiStudio", message);
+}
+
 function recordProviderStatus(id: string, status: "online" | "limited" | "exhausted" | "offline", detail: string) {
     providerQuotaCache[id] = { status, detail, updatedAt: Date.now() };
 }
@@ -578,7 +604,8 @@ async function generateColabGpuVideo(
     const reqPath = path.join(tmpDir, `colab_req_${Date.now()}.json`);
     const outPath = path.join(tmpDir, `colab_out_${Date.now()}.mp4`);
     try {
-        logger.info("AiStudio", `Enviando geração cinematográfica para seu Google Colab GPU (${colabUrl})...`);
+        logger.info("AiStudio", `Enviando solicitação de vídeo para seu Google Colab GPU (${colabUrl})...`);
+        pushStudioLog("INFO", `Colab GPU: enviando prompt para ${colabUrl} (${aspectRatio}${imageBase64 ? ", com imagem" : ""})...`);
         const payload = {
             prompt: englishPrompt,
             aspect_ratio: aspectRatio,
@@ -608,14 +635,15 @@ async function generateColabGpuVideo(
         const buf = await fs.readFile(outPath);
         if (buf.length > 10000) {
             recordProviderStatus("colab-gpu", "online", "Colab GPU conectado e gerando vídeos");
-            logger.info("AiStudio", `Vídeo gerado com sucesso no Google Colab GPU (${(buf.length / 1024 / 1024).toFixed(2)} MB)!`);
+            pushStudioLog("OK", `Colab GPU: vídeo recebido com sucesso (${(buf.length / 1024 / 1024).toFixed(2)} MB)!`);
             return buf;
         }
+        pushStudioLog("WARN", "Colab GPU: resposta vazia ou inválida (< 10 KB).");
         return null;
     } catch (err: any) {
         const msg = String(err?.message || "Erro ao conectar no Colab");
         recordProviderStatus("colab-gpu", "offline", "Colab desconectado ou célula parada");
-        logger.warn("AiStudio", `Colab GPU indisponível (${msg.slice(0, 120)})`);
+        pushStudioLog("WARN", `Colab GPU falhou: ${msg.slice(0, 140)}`);
         return null;
     } finally {
         await fs.unlink(reqPath).catch(() => {});
@@ -947,6 +975,10 @@ export async function GET(
             return NextResponse.json({ status: true, data: { providers } });
         }
 
+        if (request.nextUrl.searchParams.get("status") === "logs") {
+            return NextResponse.json({ status: true, data: { logs: studioExecutionLogs } });
+        }
+
         const items = await readGalleryIndex(sessionId);
 
         const maskedApiKey = apiKey
@@ -996,6 +1028,11 @@ export async function POST(
         const { apiKey, dbSessionId } = await resolveGeminiApiKey(sessionId);
         if (!dbSessionId) {
             return NextResponse.json({ status: false, message: "Sessão não encontrada" }, { status: 404 });
+        }
+
+        if (action === "clear-logs") {
+            studioExecutionLogs.length = 0;
+            return NextResponse.json({ status: true, message: "Logs limpos." });
         }
 
         // 1. Salvar Chave da API Gemini
@@ -1267,6 +1304,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             }
 
             const fullPrompt = stylePreset ? `${prompt}. Estilo cinematográfico: ${stylePreset}` : prompt;
+            pushStudioLog("INFO", `Iniciando geração de vídeo (modelo: ${requestedModel}, formato: ${aspectRatio})...`);
 
             let imageInput: { imageBytes: string; mimeType: string } | undefined;
             if (sourceImageFilename) {
@@ -1368,7 +1406,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     if (/402|403|billing|credit|depleted|quota/i.test(msg)) {
                         recordProviderStatus("google-veo", "exhausted", msg.slice(0, 80));
                     }
-                    logger.warn("AiStudio", `Google Veo (${veoModel}) indisponível (${msg.slice(0, 120)})`);
+                    pushStudioLog("WARN", `Google Veo (${veoModel}) indisponível: ${msg.slice(0, 120)}`);
                 }
                 return null;
             };
@@ -1411,6 +1449,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
 
             // 2. Tentar IA Video Diffusion na Nuvem (Pika H3 -> LTX-Video -> MiniMax H3)
             if (!videoBuffer && requestedModel !== "cinematic-multiscene") {
+                pushStudioLog("INFO", "Tentando servidores gratuitos na nuvem (Pika H3 / LTX-Video / MiniMax H3)...");
                 const englishPrompt = await getEnglishPrompt();
                 videoBuffer = await generateCloudDiffusionVideo(
                     englishPrompt,
@@ -1421,6 +1460,9 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                 );
                 if (videoBuffer) {
                     usedModel = "cloud-video-diffusion";
+                    pushStudioLog("OK", "Nuvem gratuita gerou o vídeo com sucesso!");
+                } else {
+                    pushStudioLog("WARN", "Servidores gratuitos na nuvem falharam ou atingiram cota diária.");
                 }
             }
 
@@ -1711,6 +1753,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
             await fs.mkdir(dir, { recursive: true });
             const filePath = path.join(dir, filename);
             await fs.writeFile(filePath, videoBuffer);
+            pushStudioLog("OK", `Vídeo final salvo: ${filename} (${(videoBuffer.length / 1024 / 1024).toFixed(2)} MB) via motor [${usedModel}].`);
 
             const safeSession = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
             const item: AiStudioMediaItem = {
