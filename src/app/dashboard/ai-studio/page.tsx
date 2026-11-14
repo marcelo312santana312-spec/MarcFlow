@@ -298,22 +298,29 @@ export default function AiStudioPage() {
         }
     };
 
-    const colabCellScript = `# === MARCFLOW COLAB GPU VIDEO SERVER (A100 / L4 / T4) ===
+    const colabCellScript = `# === MARCFLOW COLAB GPU VIDEO SERVER (A100 / L4 / T4 + CACHE NO DRIVE) ===
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+os.environ["HF_HOME"] = "/content/drive/MyDrive/marcflow_hf_cache"
+os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+
 !pip install -q -U diffusers transformers accelerate sentencepiece ftfy imageio[ffmpeg] fastapi uvicorn
 !wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared
 
-import os, io, re, time, base64, tempfile, threading, subprocess, torch
+import io, re, time, base64, tempfile, threading, subprocess, torch
 from fastapi import FastAPI
 from fastapi.responses import Response
 from pydantic import BaseModel
 from PIL import Image
-from diffusers import AutoencoderKLWan, WanPipeline, WanImageToVideoPipeline
+from diffusers import AutoencoderKLWan, WanPipeline, WanImageToVideoPipeline, LTXImageToVideoPipeline
 from diffusers.utils import export_to_video
 import uvicorn
 
 gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 vram_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if torch.cuda.is_available() else 0
-print(f"GPU detectada: {gpu_name} ({vram_gb:.1f} GB VRAM)")
+print(f"GPU detectada: {gpu_name} ({vram_gb:.1f} GB VRAM) | Cache: {os.environ['HF_HOME']}")
 
 MODEL_T2V = "Wan-AI/Wan2.1-T2V-14B-Diffusers" if vram_gb >= 38 else "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 print(f"Carregando modelo: {MODEL_T2V} ...")
@@ -342,7 +349,7 @@ def generate(req: GenReq):
     num_frames = 81  # ~5s fluído em 16fps (sincronizado com FFmpeg no MarcFlow)
     neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
 
-    if req.image_base64 and vram_gb >= 22:
+    if req.image_base64 and vram_gb >= 38:
         if pipe_i2v is None:
             i2v_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
             vae_i2v = AutoencoderKLWan.from_pretrained(i2v_id, subfolder="vae", torch_dtype=torch.float32)
@@ -351,6 +358,14 @@ def generate(req: GenReq):
         img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((w, h))
         frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
+    elif req.image_base64 and vram_gb >= 14:
+        if pipe_i2v is None:
+            pipe_i2v = LTXImageToVideoPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=torch.bfloat16)
+            pipe_i2v.enable_model_cpu_offload()
+        lw, lh = (512, 768) if req.aspect_ratio == "9:16" else (768, 512)
+        img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
+        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=97, num_inference_steps=30).frames[0]
     else:
         frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
 
