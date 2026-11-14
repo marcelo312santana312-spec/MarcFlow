@@ -343,7 +343,7 @@ def health():
 def generate(req: GenReq):
     global pipe_i2v
     w, h = (480, 832) if req.aspect_ratio == "9:16" else (832, 480)
-    num_frames = 81  # ~5s fluído em 16fps (sincronizado com FFmpeg no MarcFlow)
+    num_frames = 121  # 121 frames a 12 fps = 10 segundos exatos (múltiplo válido para Wan 2.1 e LTX)
     neg = "blurry, distorted, low quality, static, watermark, text, deformed face"
 
     if req.image_base64 and vram_gb >= 38:
@@ -362,13 +362,13 @@ def generate(req: GenReq):
         lw, lh = (512, 768) if req.aspect_ratio == "9:16" else (768, 512)
         img_bytes = base64.b64decode(req.image_base64.split(",")[-1])
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((lw, lh))
-        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=97, num_inference_steps=30).frames[0]
+        frames = pipe_i2v(image=img, prompt=req.prompt, negative_prompt=neg, width=lw, height=lh, num_frames=num_frames, num_inference_steps=30).frames[0]
     else:
         frames = pipe_t2v(prompt=req.prompt, negative_prompt=neg, height=h, width=w, num_frames=num_frames, guidance_scale=5.0, num_inference_steps=28).frames[0]
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         out_path = tmp.name
-    export_to_video(frames, out_path, fps=16)
+    export_to_video(frames, out_path, fps=12)
     with open(out_path, "rb") as f:
         data = f.read()
     os.remove(out_path)

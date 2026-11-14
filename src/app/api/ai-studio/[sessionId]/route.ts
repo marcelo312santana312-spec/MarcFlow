@@ -592,7 +592,7 @@ async function generateColabGpuVideo(
                 "-4",
                 "-fsSL",
                 "--max-time",
-                "300",
+                "480",
                 "-X",
                 "POST",
                 `${colabUrl}/generate`,
@@ -1396,7 +1396,7 @@ Retorne APENAS um JSON válido (sem markdown) no formato:
                     engPrompt,
                     aspectRatio,
                     imageInput?.imageBytes,
-                    totalDur
+                    Math.max(10, totalDur)
                 );
                 if (videoBuffer) {
                     usedModel = "colab-wan-gpu";
