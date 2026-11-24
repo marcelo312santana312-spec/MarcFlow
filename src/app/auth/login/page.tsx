@@ -82,7 +82,7 @@ function LoginForm() {
     setGoogleLoading(true);
     setError(null);
     try {
-      await signIn('google', { callbackUrl: '/dashboard' });
+      await signIn('google', { callbackUrl });
     } catch {
       setError("Erro ao conectar com o Google. Tente novamente.");
       setGoogleLoading(false);

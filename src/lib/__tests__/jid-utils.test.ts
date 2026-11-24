@@ -24,6 +24,6 @@ test("chatPathFromJid extrai número limpo para usuários e codifica grupos", ()
 });
 
 test("chatJidFromPath formata JID usando DDI padrão 55 para números com 0", () => {
-    assert.equal(chatJidFromPath("011999999999"), "551199999999@s.whatsapp.net");
+    assert.equal(chatJidFromPath("011999999999"), "5511999999999@s.whatsapp.net");
     assert.equal(chatJidFromPath("5511999999999"), "5511999999999@s.whatsapp.net");
 });

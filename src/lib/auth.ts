@@ -85,8 +85,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           });
         }
 
-        // Inject DB id into the user object so session callbacks pick it up
+        // Inject DB id and role into the user object so session callbacks pick them up
         user.id = dbUser.id;
+        (user as { role?: string }).role = dbUser.role;
         return true;
       }
 
