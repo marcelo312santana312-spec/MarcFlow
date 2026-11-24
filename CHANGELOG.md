@@ -2,7 +2,12 @@
 
 ## [Não lançado]
 
-- Nova aba **Exportar conversas**: seleção de várias conversas (ou todas), sincronização do histórico e download de um ZIP com TXT por conversa, áudios originais, mídias opcionais, índice e relatório do que ficou indisponível
+- **CI/CD Automatizado**: adicionado fluxo do GitHub Actions (`.github/workflows/ci.yml`) para validação contínua de tipos TypeScript, lint e testes a cada push e PR.
+- **Suporte Multiplataforma**: inclusão de `cross-env` nos scripts do `package.json` (`dev`, `build`, `start`) para execução universal e correção do `iniciar.bat` para caminho dinâmico (`%~dp0`).
+- **Aprimoramento do Docker**: migração do `Dockerfile` para Node.js 22 LTS e instalação do pacote `ffmpeg`, garantindo compatibilidade no envio de notas de voz em contêineres.
+- **Localização Brasileira**: padronização de fuso horário (`America/Sao_Paulo`), localidade (`pt-BR`) e DDI padrão no `.env.example`, `docker-compose.yml` e `jid-utils`.
+- **Testes Automatizados**: inclusão de script `npm test` usando o runner nativo do Node/TSX e testes unitários em `src/lib/__tests__/jid-utils.test.ts`.
+- Nova aba **Exportar conversas**: seleção de várias conversas (ou todas), sincronização do histórico e download de um ZIP com TXT por conversa, áudios originais, mídias opcionais, índice e relatório do que ficou indisponível.
 
 ## [1.0.0] - 2026-10-18
 

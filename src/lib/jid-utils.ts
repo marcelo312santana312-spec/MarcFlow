@@ -179,7 +179,8 @@ export function chatJidFromPath(raw: string): string {
     if (v.includes("@")) return v;
     if (/^\d+-\d+$/.test(v)) return `${v}@g.us`;
     let clean = v.replace(/\D/g, "");
-    if (clean.startsWith("0")) clean = "62" + clean.substring(1); // upstream default for local numbers
+    const defaultDdi = process.env.DEFAULT_COUNTRY_CODE || "55";
+    if (clean.startsWith("0")) clean = defaultDdi + clean.substring(1);
     return `${clean}@s.whatsapp.net`;
 }
 
