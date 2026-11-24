@@ -16,11 +16,11 @@ export default function SettingsPage() {
     const [systemConfig, setSystemConfig] = useState({
         appName: "MarcFlow",
         logoUrl: "",
-        timezone: "Asia/Jakarta",
+        timezone: "America/Sao_Paulo",
         enableRegistration: true
     });
     const [systemLoading, setSystemLoading] = useState(false);
-    const [timezones, setTimezones] = useState<string[]>(["UTC", "Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura"]);
+    const [timezones, setTimezones] = useState<string[]>(["UTC", "America/Sao_Paulo", "America/Fortaleza", "America/Manaus"]);
 
     useEffect(() => {
         try {
@@ -48,7 +48,7 @@ export default function SettingsPage() {
                         logoUrl: data.logoUrl || "",
                         // @ts-ignore
                         faviconUrl: data.faviconUrl || "/favicon.ico",
-                        timezone: data.timezone || "Asia/Jakarta",
+                        timezone: data.timezone || "America/Sao_Paulo",
                         enableRegistration: data.enableRegistration !== undefined ? data.enableRegistration : true
                     });
                 }
