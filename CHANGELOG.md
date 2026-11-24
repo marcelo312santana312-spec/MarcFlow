@@ -2,7 +2,7 @@
 
 ## [Não lançado]
 
-- **CI/CD Automatizado**: adicionado fluxo do GitHub Actions (`.github/workflows/ci.yml`) para validação contínua de tipos TypeScript, lint e testes a cada push e PR.
+- **Login com Google (OAuth)**: integração do Google OAuth via NextAuth v5. O botão "Entrar com Google" aparece na tela de login quando `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true`. Suporte a criação automática de conta para novos usuários Google (controlado por `GOOGLE_ALLOW_NEW_USERS`).
 - **Suporte Multiplataforma**: inclusão de `cross-env` nos scripts do `package.json` (`dev`, `build`, `start`) para execução universal e correção do `iniciar.bat` para caminho dinâmico (`%~dp0`).
 - **Aprimoramento do Docker**: migração do `Dockerfile` para Node.js 22 LTS e instalação do pacote `ffmpeg`, garantindo compatibilidade no envio de notas de voz em contêineres.
 - **Localização Brasileira**: padronização de fuso horário (`America/Sao_Paulo`), localidade (`pt-BR`) e DDI padrão no `.env.example`, `docker-compose.yml` e `jid-utils`.
