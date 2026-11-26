@@ -33,6 +33,7 @@ import {
     ShoppingBag,
     Sparkles,
     Instagram,
+    Crown,
 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
@@ -93,7 +94,8 @@ const navGroups: NavGroup[] = [
     {
         label: "Administração",
         items: [
-            { href: "/dashboard/media", label: "Gerenciador de mídia", icon: HardDrive },
+            { href: "/dashboard/admin", label: "Gestão SaaS (Clientes)", icon: Crown, superadminOnly: true },
+            { href: "/dashboard/media", label: "Gerenciador de Mídia", icon: HardDrive },
             { href: "/dashboard/sessions/access", label: "Acesso às sessões", icon: UserPlus },
             { href: "/dashboard/users", label: "Usuários", icon: Users },
             { href: "/dashboard/settings", label: "Configurações", icon: Settings },

@@ -34,7 +34,8 @@ import {
     Kanban,
     CalendarDays,
     CreditCard,
-    Instagram
+    Instagram,
+    Crown
 } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 import {
@@ -106,6 +107,7 @@ export const navGroups: NavGroup[] = [
     {
         label: "Desenvolvedor & Sistema",
         items: [
+            { href: "/dashboard/admin", label: "Gestão SaaS (Clientes)", icon: Crown, superadminOnly: true },
             { href: "/dashboard/webhooks", label: "Webhooks & API", icon: Webhook, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/docs", label: "Documentação da API", icon: FileText, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/swagger", label: "Swagger UI", icon: Code, external: true, allowedRoles: ["OWNER", "SUPERADMIN"] },

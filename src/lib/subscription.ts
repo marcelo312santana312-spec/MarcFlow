@@ -87,6 +87,35 @@ export async function resolveBillingOwnerId(userId: string): Promise<{ ownerId: 
 }
 
 /**
+ * Computes effective subscription status considering trialEndsAt and currentPeriodEnd.
+ */
+export function computeEffectiveSubscriptionStatus(
+    subscription: { status: string; trialEndsAt: Date | null; currentPeriodEnd: Date | null },
+    now: Date = new Date()
+): { effectiveStatus: string; shouldMarkExpired: boolean; trialDaysLeft: number } {
+    let effectiveStatus = subscription.status;
+    let shouldMarkExpired = false;
+
+    if (effectiveStatus === "TRIAL" && subscription.trialEndsAt && subscription.trialEndsAt < now) {
+        effectiveStatus = "EXPIRED";
+        shouldMarkExpired = true;
+    } else if (
+        effectiveStatus === "ACTIVE" &&
+        subscription.currentPeriodEnd &&
+        subscription.currentPeriodEnd < now
+    ) {
+        effectiveStatus = "PAST_DUE";
+    }
+
+    const trialDaysLeft =
+        subscription.trialEndsAt && subscription.trialEndsAt > now
+            ? Math.max(0, Math.ceil((subscription.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+            : 0;
+
+    return { effectiveStatus, shouldMarkExpired, trialDaysLeft };
+}
+
+/**
  * Returns the user's active/trial subscription, plan limits, and current resource usage.
  * Automatically creates a 7-day Pro Trial if the owner has no subscription yet.
  */
@@ -122,21 +151,14 @@ export async function getUserSubscriptionWithLimits(userId: string) {
     }
 
     const now = new Date();
-    let effectiveStatus = subscription.status;
+    const { effectiveStatus, shouldMarkExpired, trialDaysLeft } = computeEffectiveSubscriptionStatus(subscription, now);
 
-    if (effectiveStatus === "TRIAL" && subscription.trialEndsAt && subscription.trialEndsAt < now) {
-        effectiveStatus = "EXPIRED";
+    if (shouldMarkExpired) {
         await prisma.subscription.update({
             where: { id: subscription.id },
             data: { status: "EXPIRED" },
         });
         subscription = { ...subscription, status: "EXPIRED" };
-    } else if (
-        effectiveStatus === "ACTIVE" &&
-        subscription.currentPeriodEnd &&
-        subscription.currentPeriodEnd < now
-    ) {
-        effectiveStatus = "PAST_DUE";
     }
 
     const startOfDay = new Date(now);
@@ -165,11 +187,6 @@ export async function getUserSubscriptionWithLimits(userId: string) {
     const usersCount = 1 + staffCount;
     const isTrialActive = effectiveStatus === "TRIAL" && (!subscription.trialEndsAt || subscription.trialEndsAt >= now);
     const isExpired = effectiveStatus === "EXPIRED" || effectiveStatus === "CANCELED";
-
-    const trialDaysLeft =
-        subscription.trialEndsAt && subscription.trialEndsAt > now
-            ? Math.max(0, Math.ceil((subscription.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
-            : 0;
 
     return {
         ownerId,
