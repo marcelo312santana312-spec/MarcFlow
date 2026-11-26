@@ -60,6 +60,8 @@ model User {
   instagramAccounts InstagramAccount[]
   instagramPosts    InstagramPost[]
   instagramAccessRequests InstagramAccessRequest[]
+  contentLibraries        ContentLibrary[]
+  autoPostRules           AutoPostRule[]
 }
 
 model Session {
@@ -1002,4 +1004,116 @@ model InstagramAccessRequest {
 
   @@index([userId, status])
   @@index([status, createdAt])
+}
+
+// --- Sales Machine Auto-Pilot (Drive / Manager Repository -> WA & IG) ---
+
+enum ContentLibrarySource {
+  MANUAL
+  GOOGLE_DRIVE
+}
+
+enum ContentMediaType {
+  IMAGE
+  VIDEO
+}
+
+model ContentLibrary {
+  id             String               @id @default(cuid())
+  userId         String
+  name           String
+  description    String?              @db.Text
+  sourceType     ContentLibrarySource @default(MANUAL)
+  driveFolderUrl String?              @db.Text
+  driveFolderId  String?
+  syncEnabled    Boolean              @default(true)
+  syncHour       Int                  @default(6)
+  lastSyncedAt   DateTime?
+  lastSyncError  String?              @db.Text
+  shareCode      String?              @unique
+  isShared       Boolean              @default(false)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items          ContentItem[]
+  rules          AutoPostRule[]
+
+  @@index([userId, createdAt])
+}
+
+model ContentItem {
+  id          String           @id @default(cuid())
+  libraryId   String
+  title       String
+  caption     String?          @db.Text
+  productUrl  String?          @db.Text
+  priceText   String?
+  couponCode  String?
+  filename    String
+  mimeType    String
+  mediaType   ContentMediaType @default(IMAGE)
+  sizeBytes   Int              @default(0)
+  driveFileId String?
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  library     ContentLibrary     @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  dispatches  AutoPostDispatch[]
+
+  @@unique([libraryId, driveFileId])
+  @@index([libraryId, isActive, createdAt])
+}
+
+model AutoPostRule {
+  id                    String   @id @default(cuid())
+  userId                String
+  libraryId             String
+  name                  String
+  isActive              Boolean  @default(true)
+  whatsappSessionId     String?
+  postWhatsappStatus    Boolean  @default(false)
+  whatsappGroupJids     Json?
+  instagramAccountIds   Json?
+  instagramPostTypes    Json?
+  scheduleTimes         Json
+  daysOfWeek            Json
+  maxPostsPerDay        Int      @default(3)
+  recycleOld            Boolean  @default(true)
+  convertAffiliateLinks Boolean  @default(true)
+  resellerLink          String?  @db.Text
+  resellerWhatsapp      String?
+  resellerCoupon        String?
+  captionTemplate       String?  @db.Text
+  lastRunAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user                  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  library               ContentLibrary     @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  dispatches            AutoPostDispatch[]
+
+  @@index([userId, isActive])
+  @@index([libraryId])
+}
+
+model AutoPostDispatch {
+  id              String   @id @default(cuid())
+  ruleId          String
+  itemId          String
+  channel         String   // WA_STATUS, WA_GROUP, IG_STORY, IG_FEED, IG_REELS
+  targetId        String
+  scheduledAt     DateTime
+  externalPostId  String?
+  status          String   @default("SCHEDULED")
+  renderedCaption String?  @db.Text
+  errorMessage    String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  rule            AutoPostRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  item            ContentItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, createdAt])
+  @@index([ruleId, itemId])
 }

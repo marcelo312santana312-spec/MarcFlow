@@ -34,6 +34,7 @@ import {
     Sparkles,
     Instagram,
     Crown,
+    Rocket,
 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
@@ -58,6 +59,7 @@ const navGroups: NavGroup[] = [
         items: [
             { href: "/dashboard/chat", label: "Conversas", icon: MessageSquare },
             { href: "/dashboard/instagram", label: "Instagram (Posts & Stories)", icon: Instagram },
+            { href: "/dashboard/autopilot", label: "Máquina de Vendas (Auto-Post)", icon: Rocket },
             { href: "/dashboard/broadcast", label: "Transmissão", icon: Megaphone },
             { href: "/dashboard/sticker", label: "Criador de figurinhas", icon: ImageIcon },
             { href: "/dashboard/archive", label: "Exportar conversas", icon: DatabaseBackup },
