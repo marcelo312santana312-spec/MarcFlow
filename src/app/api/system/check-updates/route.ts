@@ -1,75 +1,139 @@
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getLatestRelease } from "@/lib/github";
-import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/api-auth";
+import {
+    getLatestCommitAndBuildStatus,
+    getUpdateRepoConfig,
+    isNewerCommitAvailable,
+} from "@/lib/github";
 
-// We'll store the last check time or version in memory or rely on Notification existence
-// For simplicity, we just check if a notification with this version title exists for the user.
+function isSelfUpdateConfigured(): boolean {
+    const url = (process.env.SYSTEM_UPDATER_URL || "").trim();
+    const secret = (process.env.SYSTEM_UPDATER_SECRET || "").trim();
+    return Boolean(url && secret);
+}
 
-// "owner/repo" on GitHub whose releases are announced as updates. Unset: no update check.
-const [REPO_OWNER, REPO_NAME] = (process.env.UPDATE_REPO || "").split("/");
+async function handleCheckUpdates(req: NextRequest, createNotification: boolean) {
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+        return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401 });
+    }
 
-import { NextRequest } from "next/server";
+    const repoConfig = getUpdateRepoConfig();
+    const currentSha = (process.env.APP_GIT_SHA || "").trim() || null;
+    const currentShortSha = currentSha ? currentSha.slice(0, 7) : null;
+    const canSelfUpdate = isSelfUpdateConfigured();
 
-export async function POST(req: NextRequest) {
-    const user = await getAuthenticatedUser(req); // Support API Key
-    if (!user) return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401 });
-
-    // Check for SUPERADMIN role? Original code didn't check, but usually system updates are restricted.
-    // Ideally we should check user.role === 'SUPERADMIN'
-    // But let's stick to making it work first.
-    const session = { user }; // Mock session structure for compatibility if needed, or just use user.id
-
-    if (!REPO_OWNER || !REPO_NAME) return NextResponse.json({ status: true, message: "Update check disabled (UPDATE_REPO not set)", data: null });
+    if (!repoConfig) {
+        return NextResponse.json({
+            status: true,
+            message: "Verificação de atualizações desativada (UPDATE_REPO).",
+            data: {
+                enabled: false,
+                currentSha,
+                currentShortSha,
+                hasUpdate: false,
+                canSelfUpdate,
+            },
+        });
+    }
 
     try {
-        const release = await getLatestRelease(REPO_OWNER, REPO_NAME);
-        if (!release) return NextResponse.json({ status: false, message: "Could not fetch release", error: "Could not fetch release" });
+        const result = await getLatestCommitAndBuildStatus(
+            repoConfig.owner,
+            repoConfig.repo,
+            repoConfig.branch
+        );
 
-        const version = release.tag_name;
-        const title = `New Update Available: ${version}`;
-
-        // Check if we already notified this user about this version
-        const existing = await prisma.notification.findFirst({
-            where: {
-                userId: session.user.id,
-                title: title
-            }
-        });
-
-        if (existing) {
-            return NextResponse.json({ status: true, message: "Already up to date (notification exists)", data: { version } });
+        if (!result) {
+            return NextResponse.json(
+                {
+                    status: false,
+                    message: "Não foi possível consultar o repositório no GitHub.",
+                    error: "Could not fetch GitHub repository status",
+                },
+                { status: 502 }
+            );
         }
 
-        // Create notification
-        const notification = await prisma.notification.create({
-            data: {
-                userId: session.user.id,
-                title: title,
-                message: `A new version (${version}) of ${REPO_NAME} is available! Check it out on GitHub.\n\n${release.name}`,
-                type: "SYSTEM",
-                href: release.html_url
-            }
-        });
+        const { latestCommit, workflowRun, imageStatus } = result;
+        const versionUnknown = !currentSha;
+        const hasUpdate = isNewerCommitAvailable(currentSha, latestCommit.sha);
 
-        // Emit Socket.IO event
-        const io = (global as any).io;
-        if (io) {
-            io.to(`user:${session.user.id}`).emit('notification:new', {
-                id: notification.id,
-                userId: session.user.id,
-                title,
-                message: notification.message,
-                type: "SYSTEM",
-                href: release.html_url,
-                createdAt: notification.createdAt
+        if (createNotification && hasUpdate) {
+            const title = `Nova atualização disponível: ${latestCommit.shortSha}`;
+            const existing = await prisma.notification.findFirst({
+                where: {
+                    userId: user.id,
+                    title,
+                },
             });
+
+            if (!existing) {
+                const notification = await prisma.notification.create({
+                    data: {
+                        userId: user.id,
+                        title,
+                        message: `Uma nova versão (${latestCommit.shortSha}) de ${repoConfig.repo} está disponível no GitHub:\n${latestCommit.message}`,
+                        type: "SYSTEM",
+                        href: "/dashboard/settings",
+                    },
+                });
+
+                const io = (global as any).io;
+                if (io) {
+                    io.to(`user:${user.id}`).emit("notification:new", {
+                        id: notification.id,
+                        userId: user.id,
+                        title,
+                        message: notification.message,
+                        type: "SYSTEM",
+                        href: "/dashboard/settings",
+                        createdAt: notification.createdAt,
+                    });
+                }
+            }
         }
 
-        return NextResponse.json({ status: true, message: "Notification sent", data: { version } });
+        let message = "Seu sistema já está na versão mais recente.";
+        if (versionUnknown) {
+            message = `Último commit no GitHub: ${latestCommit.shortSha} (${latestCommit.message}).`;
+        } else if (hasUpdate && imageStatus === "building") {
+            message = `Nova versão ${latestCommit.shortSha} encontrada, mas o GitHub Actions ainda está compilando a imagem.`;
+        } else if (hasUpdate) {
+            message = `Nova versão disponível: ${latestCommit.shortSha} — ${latestCommit.message}`;
+        }
 
+        return NextResponse.json({
+            status: true,
+            message,
+            data: {
+                enabled: true,
+                repo: repoConfig.fullName,
+                branch: repoConfig.branch,
+                currentSha,
+                currentShortSha,
+                versionUnknown,
+                hasUpdate,
+                imageStatus,
+                latestCommit,
+                workflowRun,
+                canSelfUpdate,
+            },
+        });
     } catch (e) {
-        console.error(e);
-        return NextResponse.json({ status: false, message: "Error checking updates", error: "Error checking updates" }, { status: 500 });
+        console.error("[CheckUpdates] Error:", e);
+        return NextResponse.json(
+            { status: false, message: "Erro ao verificar atualizações", error: "Error checking updates" },
+            { status: 500 }
+        );
     }
+}
+
+export async function GET(req: NextRequest) {
+    return handleCheckUpdates(req, false);
+}
+
+export async function POST(req: NextRequest) {
+    return handleCheckUpdates(req, true);
 }

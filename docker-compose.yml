@@ -26,6 +26,8 @@ services:
     restart: always
     ports:
       - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@db:3306/${MYSQL_DATABASE:-marcflow}
       - AUTH_SECRET=${AUTH_SECRET}
@@ -52,6 +54,10 @@ services:
       - INSTAGRAM_APP_SECRET=${INSTAGRAM_APP_SECRET:-}
       - INSTAGRAM_REDIRECT_URI=${INSTAGRAM_REDIRECT_URI:-}
       - INSTAGRAM_GRAPH_VERSION=${INSTAGRAM_GRAPH_VERSION:-v22.0}
+      - UPDATE_REPO=${UPDATE_REPO:-marcelo312santana312-spec/MarcFlow}
+      - UPDATE_BRANCH=${UPDATE_BRANCH:-main}
+      - SYSTEM_UPDATER_URL=${SYSTEM_UPDATER_URL:-}
+      - SYSTEM_UPDATER_SECRET=${SYSTEM_UPDATER_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
