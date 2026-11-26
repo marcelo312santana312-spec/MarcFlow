@@ -86,7 +86,7 @@ export default function PrivacyPage() {
 
                         <div className="mt-12 p-6 bg-blue-500/5 rounded-2xl border border-blue-500/10">
                             <p className="font-semibold mb-2">Precisa de mais detalhes?</p>
-                            <p className="text-sm text-muted-foreground mb-0">Se você tiver dúvidas específicas sobre o tratamento de dados ou quiser auditar o código, fale com o criador do MarcFlow, Marcos Maia, pelo <Link href="https://instagram.com/marcolamaia">Instagram @marcolamaia</Link>.</p>
+                            <p className="text-sm text-muted-foreground mb-0">Se você tiver dúvidas específicas sobre o tratamento de dados, exclusão de informações ou quiser entrar em contato com o responsável pelo sistema, envie um e-mail para <a href="mailto:marcelo312@hotmail.com.br">marcelo312@hotmail.com.br</a>.</p>
                         </div>
                     </div>
                 </div>
