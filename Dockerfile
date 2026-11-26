@@ -5,11 +5,17 @@ WORKDIR /app
 # Dependency layer — cache-friendly: only rerun when package*.json changes
 COPY package*.json ./
 COPY patches ./patches/
-COPY prisma ./prisma/
 RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 # Source & build
+COPY prisma ./prisma/
 COPY . .
+ARG NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false
+ARG NEXT_PUBLIC_APP_URL=""
+ARG NEXT_PUBLIC_API_URL=""
+ENV NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=${NEXT_PUBLIC_GOOGLE_AUTH_ENABLED}
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN npx prisma generate && npm run build
 
 # Strip devDeps from node_modules after build
