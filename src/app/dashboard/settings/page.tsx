@@ -59,7 +59,7 @@ interface UpdaterState {
 }
 
 export default function SettingsPage() {
-    const { data: authSession } = useSession();
+    const { data: authSession, status: sessionStatus } = useSession();
     const isSuperAdmin = (authSession?.user as any)?.role === "SUPERADMIN";
 
     const [systemConfig, setSystemConfig] = useState({
@@ -223,8 +223,9 @@ export default function SettingsPage() {
     }, [fetchUpdateCheck]);
 
     useEffect(() => {
+        if (!isSuperAdmin) return;
         fetchUpdateCheck("GET");
-    }, [fetchUpdateCheck]);
+    }, [isSuperAdmin, fetchUpdateCheck]);
 
     useEffect(() => {
         if (!isSuperAdmin) return;
@@ -345,28 +346,34 @@ export default function SettingsPage() {
         restartingServer ||
         (updaterState && updaterState.state !== "idle" && (updaterState.logs?.length > 0 || updaterState.error));
 
+    if (sessionStatus === "loading") {
+        return <div className="p-8 text-center text-sm text-muted-foreground">Carregando...</div>;
+    }
+
+    if (!isSuperAdmin) {
+        return (
+            <Card className="border-red-200 bg-red-50 max-w-xl mx-auto mt-10">
+                <CardContent className="pt-6">
+                    <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+                        <div>
+                            <p className="text-sm font-medium text-red-900">Acesso restrito ao SuperAdmin</p>
+                            <p className="text-xs text-red-700 mt-1">
+                                Somente SuperAdmins podem visualizar e gerenciar as configurações globais e atualizações do sistema.
+                            </p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+        );
+    }
+
     return (
         <div className="space-y-6">
             <div>
                 <h2 className="text-xl sm:text-3xl font-bold tracking-tight">Configurações</h2>
                 <p className="text-muted-foreground text-sm mt-1">Configuração global do sistema. Somente SuperAdmins podem fazer alterações.</p>
             </div>
-
-            {!isSuperAdmin && (
-                <Card className="border-yellow-200 bg-yellow-50">
-                    <CardContent className="pt-6">
-                        <div className="flex items-start gap-3">
-                            <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
-                            <div>
-                                <p className="text-sm font-medium text-yellow-900">Modo somente leitura</p>
-                                <p className="text-xs text-yellow-700 mt-1">
-                                    Somente Superadmins podem alterar as configurações do sistema. Você pode ver as configurações atuais, mas não pode alterá-las.
-                                </p>
-                            </div>
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
 
             {/* System Configuration (Global) */}
             <Card className="border-primary/20 bg-primary/5">

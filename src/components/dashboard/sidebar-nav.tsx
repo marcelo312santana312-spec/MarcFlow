@@ -101,7 +101,7 @@ export const navGroups: NavGroup[] = [
             { href: "/dashboard/plans", label: "Planos & Assinatura", icon: CreditCard, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/dashboard/sessions/access", label: "Acesso às Sessões", icon: UserPlus, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/dashboard/media", label: "Gerenciador de Mídia", icon: HardDrive, allowedRoles: ["OWNER", "SUPERADMIN"] },
-            { href: "/dashboard/settings", label: "Configurações", icon: Settings, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/settings", label: "Configurações", icon: Settings, superadminOnly: true },
         ],
     },
     {

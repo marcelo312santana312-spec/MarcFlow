@@ -11,12 +11,14 @@ interface SidebarShellProps {
     appName: string;
     userName?: string | null;
     userEmail?: string | null;
+    userRole?: string | null;
     version: string;
 }
 
-export function SidebarShell({ appName, userName, userEmail, version }: SidebarShellProps) {
+export function SidebarShell({ appName, userName, userEmail, userRole, version }: SidebarShellProps) {
     const { isCollapsed, toggleCollapse } = useSidebar();
     const initial = userName?.charAt(0)?.toUpperCase() || "U";
+    const isSuperAdmin = userRole === "SUPERADMIN";
 
     return (
         <aside
@@ -66,9 +68,11 @@ export function SidebarShell({ appName, userName, userEmail, version }: SidebarS
                                 <p className="truncate text-[13px] font-semibold text-white">{userName || "Usuário"}</p>
                                 <p className="truncate text-[11px] text-[#8E9894]">{userEmail}</p>
                             </div>
-                            <Link href="/dashboard/settings" title="Configurações" className="rounded-lg p-1.5 text-[#9AA5A1] transition-colors hover:bg-white/10 hover:text-white">
-                                <Settings size={18} />
-                            </Link>
+                            {isSuperAdmin && (
+                                <Link href="/dashboard/settings" title="Configurações" className="rounded-lg p-1.5 text-[#9AA5A1] transition-colors hover:bg-white/10 hover:text-white">
+                                    <Settings size={18} />
+                                </Link>
+                            )}
                         </div>
                         <div className="border-t border-white/[0.07] pt-2">
                             <button onClick={() => signOut({ callbackUrl: "/auth/login" })}

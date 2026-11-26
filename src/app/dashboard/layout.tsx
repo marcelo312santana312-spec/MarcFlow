@@ -24,7 +24,7 @@ export default async function DashboardLayout({
     return (
         <SessionProvider>
             <SidebarProvider>
-                <UpdateChecker />
+                {session?.user?.role === "SUPERADMIN" && <UpdateChecker />}
                 <RegistrationWarning
                     role={session?.user?.role as string}
                     registrationEnabled={registrationEnabled}
@@ -35,6 +35,7 @@ export default async function DashboardLayout({
                         appName={appName}
                         userName={session?.user?.name}
                         userEmail={session?.user?.email}
+                        userRole={session?.user?.role as string | undefined}
                         version={pkg.version}
                     />
 
