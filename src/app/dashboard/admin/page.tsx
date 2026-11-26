@@ -23,6 +23,9 @@ import {
     Sparkles,
     Kanban,
     Loader2,
+    Copy,
+    ExternalLink,
+    Check,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -111,6 +114,20 @@ interface PlanSummary {
     mrrCents: number;
 }
 
+interface InstagramAccessRequestRow {
+    id: string;
+    userId: string;
+    userName: string | null;
+    userEmail: string;
+    igUsername: string;
+    status: "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED";
+    adminNote: string | null;
+    approvedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
 interface Kpis {
     totalClients: number;
     totalTeamMembers: number;
@@ -162,6 +179,10 @@ export default function SuperAdminDashboardPage() {
     const [kpis, setKpis] = useState<Kpis | null>(null);
     const [clients, setClients] = useState<ClientRow[]>([]);
     const [plans, setPlans] = useState<PlanSummary[]>([]);
+    const [igRequests, setIgRequests] = useState<InstagramAccessRequestRow[]>([]);
+    const [activeTab, setActiveTab] = useState<string>("clients");
+    const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
+    const [copiedHandle, setCopiedHandle] = useState<string | null>(null);
 
     const [searchTerm, setSearchTerm] = useState("");
     const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -210,12 +231,59 @@ export default function SuperAdminDashboardPage() {
             setKpis(json.data.kpis);
             setClients(json.data.clients || []);
             setPlans(json.data.plans || []);
+            setIgRequests(json.data.instagramRequests || []);
         } catch {
             toast.error("Falha de conexão ao carregar dados do SuperAdmin.");
         } finally {
             setLoading(false);
         }
     }, []);
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            const tabParam = new URLSearchParams(window.location.search).get("tab");
+            if (tabParam === "instagram" || tabParam === "plans" || tabParam === "clients") {
+                setActiveTab(tabParam);
+            }
+        }
+    }, []);
+
+    const handleInstagramRequestAction = async (
+        id: string,
+        status: "PENDING" | "APPROVED" | "REJECTED",
+        adminNote?: string
+    ) => {
+        setBusyRequestId(id);
+        try {
+            const res = await fetch(`/api/instagram/access-requests/${id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status, adminNote }),
+            });
+            const json = await res.json();
+            if (!res.ok || !json.status) {
+                toast.error(json.error || "Falha ao atualizar solicitação.");
+                return;
+            }
+            toast.success(json.message || "Solicitação atualizada!");
+            await loadOverview();
+        } catch {
+            toast.error("Erro de conexão ao atualizar solicitação.");
+        } finally {
+            setBusyRequestId(null);
+        }
+    };
+
+    const copyIgHandle = async (handle: string) => {
+        try {
+            await navigator.clipboard.writeText(handle);
+            setCopiedHandle(handle);
+            toast.success(`Usuário "${handle}" copiado para colar na Meta!`);
+            setTimeout(() => setCopiedHandle((cur) => (cur === handle ? null : cur)), 2500);
+        } catch {
+            toast.error("Não foi possível copiar.");
+        }
+    };
 
     useEffect(() => {
         if (sessionStatus === "authenticated" && isSuperAdmin) {
@@ -542,10 +610,19 @@ export default function SuperAdminDashboardPage() {
                 </div>
             )}
 
-            <Tabs defaultValue="clients" className="space-y-4">
-                <TabsList>
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+                <TabsList className="flex-wrap h-auto">
                     <TabsTrigger value="clients">
                         Clientes & Assinaturas ({clients.length})
+                    </TabsTrigger>
+                    <TabsTrigger value="instagram" className="gap-1.5">
+                        <Instagram className="h-3.5 w-3.5 text-pink-600" />
+                        Liberações Instagram
+                        {igRequests.filter((r) => r.status === "PENDING").length > 0 && (
+                            <Badge className="ml-1 bg-amber-500 text-white px-1.5 py-0 text-[10px]">
+                                {igRequests.filter((r) => r.status === "PENDING").length} pendente(s)
+                            </Badge>
+                        )}
                     </TabsTrigger>
                     <TabsTrigger value="plans">
                         Planos & Preços ({plans.length})
@@ -721,6 +798,157 @@ export default function SuperAdminDashboardPage() {
                                                                     <SlidersHorizontal className="h-3.5 w-3.5 mr-1" />
                                                                     Gerenciar
                                                                 </Button>
+                                                            </div>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                {/* Tab: Liberações Instagram */}
+                <TabsContent value="instagram" className="space-y-4">
+                    <Card>
+                        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div>
+                                <CardTitle className="flex items-center gap-2 text-lg">
+                                    <Instagram className="h-5 w-5 text-pink-600" />
+                                    Solicitações de Testadores do Instagram
+                                </CardTitle>
+                                <CardDescription className="mt-1">
+                                    Copie o usuário abaixo, adicione em <strong>Funções do app → Testadores do Instagram</strong> na Meta e clique em <strong>Liberar cliente</strong> para destravar os passos de conexão para ele.
+                                </CardDescription>
+                            </div>
+                            <a
+                                href="https://developers.facebook.com/apps/"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-md border hover:bg-muted shrink-0"
+                            >
+                                Abrir Meta for Developers
+                                <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                        </CardHeader>
+                        <CardContent className="p-0">
+                            <div className="overflow-x-auto">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Cliente</TableHead>
+                                            <TableHead>@ Instagram</TableHead>
+                                            <TableHead>Status</TableHead>
+                                            <TableHead>Solicitado em</TableHead>
+                                            <TableHead className="text-right">Ações</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {igRequests.length === 0 ? (
+                                            <TableRow>
+                                                <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
+                                                    Nenhuma solicitação de liberação do Instagram recebida ainda.
+                                                </TableCell>
+                                            </TableRow>
+                                        ) : (
+                                            igRequests.map((req) => {
+                                                const busy = busyRequestId === req.id;
+                                                return (
+                                                    <TableRow key={req.id}>
+                                                        <TableCell>
+                                                            <div className="font-medium">{req.userName || "Sem nome"}</div>
+                                                            <div className="text-xs text-muted-foreground">{req.userEmail}</div>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-mono font-semibold text-pink-700">
+                                                                    @{req.igUsername}
+                                                                </span>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="ghost"
+                                                                    className="h-7 px-2 text-xs"
+                                                                    onClick={() => copyIgHandle(req.igUsername)}
+                                                                    title="Copiar sem @"
+                                                                >
+                                                                    {copiedHandle === req.igUsername ? (
+                                                                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                                                                    ) : (
+                                                                        <Copy className="h-3.5 w-3.5" />
+                                                                    )}
+                                                                </Button>
+                                                            </div>
+                                                            {req.adminNote && (
+                                                                <p className="text-[11px] text-muted-foreground mt-0.5">{req.adminNote}</p>
+                                                            )}
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            {req.status === "PENDING" ? (
+                                                                <Badge className="bg-amber-100 text-amber-800 border-amber-200 gap-1">
+                                                                    <Clock className="h-3 w-3" /> Pendente
+                                                                </Badge>
+                                                            ) : req.status === "APPROVED" ? (
+                                                                <Badge className="bg-blue-100 text-blue-800 border-blue-200 gap-1">
+                                                                    <CheckCircle2 className="h-3 w-3" /> Liberado (aguardando cliente)
+                                                                </Badge>
+                                                            ) : req.status === "COMPLETED" ? (
+                                                                <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 gap-1">
+                                                                    <CheckCircle2 className="h-3 w-3" /> Conectado
+                                                                </Badge>
+                                                            ) : (
+                                                                <Badge variant="destructive" className="gap-1">
+                                                                    <XCircle className="h-3 w-3" /> Recusado
+                                                                </Badge>
+                                                            )}
+                                                        </TableCell>
+                                                        <TableCell className="text-xs text-muted-foreground">
+                                                            {new Date(req.createdAt).toLocaleString("pt-BR")}
+                                                        </TableCell>
+                                                        <TableCell className="text-right">
+                                                            <div className="flex justify-end gap-1.5">
+                                                                {req.status !== "APPROVED" && req.status !== "COMPLETED" && (
+                                                                    <Button
+                                                                        size="sm"
+                                                                        disabled={busy}
+                                                                        onClick={() => handleInstagramRequestAction(req.id, "APPROVED")}
+                                                                    >
+                                                                        {busy ? (
+                                                                            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                                                                        ) : (
+                                                                            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                                                                        )}
+                                                                        Adicionado na Meta (Liberar)
+                                                                    </Button>
+                                                                )}
+                                                                {req.status === "PENDING" && (
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="outline"
+                                                                        disabled={busy}
+                                                                        onClick={() =>
+                                                                            handleInstagramRequestAction(
+                                                                                req.id,
+                                                                                "REJECTED",
+                                                                                "Verifique o @usuário informado e confirme que a conta é Profissional."
+                                                                            )
+                                                                        }
+                                                                    >
+                                                                        Recusar
+                                                                    </Button>
+                                                                )}
+                                                                {(req.status === "APPROVED" || req.status === "REJECTED") && (
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="ghost"
+                                                                        disabled={busy}
+                                                                        onClick={() => handleInstagramRequestAction(req.id, "PENDING")}
+                                                                    >
+                                                                        Reabrir
+                                                                    </Button>
+                                                                )}
                                                             </div>
                                                         </TableCell>
                                                     </TableRow>

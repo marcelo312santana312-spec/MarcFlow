@@ -20,6 +20,32 @@ export interface CreateInstagramPostInput {
 const VALID_TYPES: ReadonlySet<string> = new Set(["FEED", "CAROUSEL", "REELS", "STORY"]);
 
 /**
+ * Normaliza um @usuário ou URL de perfil do Instagram para o handle limpo (sem @).
+ * Retorna null se o formato for inválido.
+ */
+export function normalizeInstagramUsername(input: string): string | null {
+    if (!input || typeof input !== "string") return null;
+    let value = input.trim();
+
+    if (/^https?:\/\//i.test(value) || value.toLowerCase().includes("instagram.com/")) {
+        try {
+            const withProto = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+            const parsed = new URL(withProto);
+            const firstSeg = parsed.pathname.split("/").filter(Boolean)[0] || "";
+            value = firstSeg;
+        } catch {
+            return null;
+        }
+    }
+
+    value = value.replace(/^@+/, "").trim().toLowerCase();
+    if (!/^[a-z0-9._]{1,30}$/.test(value)) {
+        return null;
+    }
+    return value;
+}
+
+/**
  * Retorna a URL base pública configurada sem barra final.
  */
 export function getPublicBaseUrl(): string {

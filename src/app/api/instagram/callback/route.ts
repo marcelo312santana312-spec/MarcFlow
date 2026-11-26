@@ -74,6 +74,18 @@ export async function GET(request: NextRequest) {
             },
         });
 
+        await prisma.instagramAccessRequest.updateMany({
+            where: {
+                userId: verifiedState.userId,
+                status: { in: ["PENDING", "APPROVED"] },
+                igUsername: profile.username.toLowerCase(),
+            },
+            data: {
+                status: "COMPLETED",
+                completedAt: new Date(),
+            },
+        });
+
         logger.info("Instagram", `Conta @${profile.username} conectada para usuário ${verifiedState.userId}`);
         return redirectDashboard({ connected: `@${profile.username}` });
     } catch (err: any) {

@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -33,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -73,6 +75,16 @@ interface InstagramConfigInfo {
   publicBaseUrl: string;
   isHttpsPublicUrl: boolean;
   graphVersion: string;
+}
+
+interface InstagramAccessRequestItem {
+  id: string;
+  igUsername: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED";
+  adminNote: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface MediaItem {
@@ -156,13 +168,23 @@ function formatDateTimePtBr(iso: string): string {
 function InstagramPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: authSession } = useSession();
+  const isSuperAdmin = (authSession?.user as any)?.role === "SUPERADMIN";
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [accounts, setAccounts] = useState<InstagramAccountItem[]>([]);
   const [configInfo, setConfigInfo] = useState<InstagramConfigInfo | null>(null);
   const [posts, setPosts] = useState<InstagramPostItem[]>([]);
+  const [accessRequests, setAccessRequests] = useState<InstagramAccessRequestItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [guideOpen, setGuideOpen] = useState(false);
+
+  // Guided connection modal state
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [requestHandleInput, setRequestHandleInput] = useState("");
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+  const [forceNewRequestForm, setForceNewRequestForm] = useState(false);
+  const [acceptedInviteCheck, setAcceptedInviteCheck] = useState(false);
 
   // Composer state
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
@@ -182,12 +204,14 @@ function InstagramPageContent() {
 
   const loadData = useCallback(async () => {
     try {
-      const [accRes, postRes] = await Promise.all([
+      const [accRes, postRes, reqRes] = await Promise.all([
         fetch("/api/instagram/accounts"),
         fetch("/api/instagram/posts"),
+        fetch("/api/instagram/access-requests"),
       ]);
       const accJson = await accRes.json();
       const postJson = await postRes.json();
+      const reqJson = await reqRes.json().catch(() => null);
 
       if (accJson?.status && accJson?.data) {
         const list: InstagramAccountItem[] = accJson.data.accounts || [];
@@ -197,6 +221,9 @@ function InstagramPageContent() {
       }
       if (postJson?.status && Array.isArray(postJson?.data)) {
         setPosts(postJson.data);
+      }
+      if (reqJson?.status && Array.isArray(reqJson?.data)) {
+        setAccessRequests(reqJson.data);
       }
     } catch {
       toast.error("Erro ao carregar dados do Instagram.");
@@ -240,13 +267,86 @@ function InstagramPageContent() {
     return posts.filter((p) => p.status === statusFilter);
   }, [posts, statusFilter]);
 
+  const activeAccessRequest = useMemo(() => {
+    const approved = accessRequests.find((r) => r.status === "APPROVED");
+    if (approved) return approved;
+    const pending = accessRequests.find((r) => r.status === "PENDING");
+    if (pending) return pending;
+    const latest = accessRequests[0];
+    if (latest && latest.status === "REJECTED") return latest;
+    return null;
+  }, [accessRequests]);
+
+  // Atualiza automaticamente enquanto houver solicitação pendente aguardando o SuperAdmin
+  useEffect(() => {
+    if (activeAccessRequest?.status !== "PENDING") return;
+    const timer = setInterval(() => {
+      void loadData();
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [activeAccessRequest?.status, loadData]);
+
   function handleConnectInstagram() {
     if (configInfo && !configInfo.configured) {
       toast.error("Configure INSTAGRAM_APP_ID e INSTAGRAM_APP_SECRET no .env primeiro.");
       setGuideOpen(true);
       return;
     }
+    setForceNewRequestForm(false);
+    setAcceptedInviteCheck(false);
+    setConnectModalOpen(true);
+  }
+
+  function startOAuthFlow() {
     window.location.href = "/api/instagram/auth?redirect=1";
+  }
+
+  async function handleSubmitAccessRequest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!requestHandleInput.trim()) {
+      toast.error("Informe o @usuário da sua conta do Instagram.");
+      return;
+    }
+    setSubmittingRequest(true);
+    try {
+      const res = await fetch("/api/instagram/access-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ igUsername: requestHandleInput }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.status) {
+        toast.error(json.error || "Não foi possível enviar a solicitação.");
+        return;
+      }
+      toast.success(json.message || "Solicitação enviada para o administrador!");
+      setRequestHandleInput("");
+      setForceNewRequestForm(false);
+      await loadData();
+    } catch {
+      toast.error("Erro ao enviar solicitação.");
+    } finally {
+      setSubmittingRequest(false);
+    }
+  }
+
+  async function handleCancelAccessRequest(id: string) {
+    setSubmittingRequest(true);
+    try {
+      const res = await fetch(`/api/instagram/access-requests/${id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok || !json.status) {
+        toast.error(json.error || "Não foi possível remover a solicitação.");
+        return;
+      }
+      toast.info("Solicitação cancelada. Informe outro @ se desejar.");
+      setForceNewRequestForm(true);
+      await loadData();
+    } catch {
+      toast.error("Erro ao cancelar solicitação.");
+    } finally {
+      setSubmittingRequest(false);
+    }
   }
 
   async function handleRefreshAccount(id: string) {
@@ -512,6 +612,73 @@ function InstagramPageContent() {
             </div>
             <Button variant="outline" size="sm" onClick={() => setGuideOpen(true)} className="shrink-0">
               Ver Passo a Passo
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Status da solicitação de liberação do Instagram */}
+      {activeAccessRequest && activeAccessRequest.status !== "COMPLETED" && (
+        <Card
+          className={
+            activeAccessRequest.status === "APPROVED"
+              ? "border-emerald-500/40 bg-emerald-500/5"
+              : activeAccessRequest.status === "PENDING"
+              ? "border-amber-500/40 bg-amber-500/5"
+              : "border-rose-500/40 bg-rose-500/5"
+          }
+        >
+          <CardContent className="pt-4 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3 text-sm">
+              {activeAccessRequest.status === "APPROVED" ? (
+                <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
+              ) : activeAccessRequest.status === "PENDING" ? (
+                <Clock className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              ) : (
+                <XCircle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              )}
+              <div>
+                {activeAccessRequest.status === "APPROVED" ? (
+                  <>
+                    <p className="font-semibold text-emerald-700 dark:text-emerald-400">
+                      Instagram @{activeAccessRequest.igUsername} liberado pelo administrador!
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Siga os passos finais para aceitar o convite no navegador e concluir a conexão no sistema.
+                    </p>
+                  </>
+                ) : activeAccessRequest.status === "PENDING" ? (
+                  <>
+                    <p className="font-semibold text-amber-700 dark:text-amber-400">
+                      Liberação pendente para @{activeAccessRequest.igUsername}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      O SuperAdmin já foi avisado para adicionar seu @ na Meta. Assim que for liberado, os próximos passos serão destravados aqui automaticamente.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-rose-700 dark:text-rose-400">
+                      Solicitação para @{activeAccessRequest.igUsername} não aprovada
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {activeAccessRequest.adminNote || "Verifique seu @usuário e solicite novamente."}
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant={activeAccessRequest.status === "APPROVED" ? "default" : "outline"}
+              onClick={handleConnectInstagram}
+              className="shrink-0"
+            >
+              {activeAccessRequest.status === "APPROVED"
+                ? "Continuar conexão →"
+                : activeAccessRequest.status === "PENDING"
+                ? "Ver status"
+                : "Tentar novamente"}
             </Button>
           </CardContent>
         </Card>
@@ -1145,6 +1312,188 @@ function InstagramPageContent() {
           <DialogFooter>
             <Button onClick={() => setGuideOpen(false)}>Fechar</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Janela guiada de conexão com o Instagram */}
+      <Dialog open={connectModalOpen} onOpenChange={setConnectModalOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-amber-500 via-pink-500 to-purple-600 text-white">
+                <Instagram className="h-4 w-4" />
+              </span>
+              Conectar conta do Instagram
+            </DialogTitle>
+            <DialogDescription>
+              Para conectar uma conta Instagram Profissional, informe seu @ para liberação e siga as etapas abaixo.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Caso 1: Solicitação Pendente */}
+          {!forceNewRequestForm && activeAccessRequest?.status === "PENDING" && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Badge className="bg-amber-500 text-white gap-1.5">
+                    <Clock className="h-3.5 w-3.5" />
+                    Pendente — aguardando SuperAdmin
+                  </Badge>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    onClick={() => void loadData()}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 mr-1" /> Atualizar
+                  </Button>
+                </div>
+                <p className="text-sm font-medium pt-1">
+                  Conta solicitada: <span className="font-mono font-bold">@{activeAccessRequest.igUsername}</span>
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  O administrador já recebeu a notificação com o seu @ para adicioná-lo como testador autorizado na Meta.
+                  Assim que ele confirmar no painel, esta janela liberará automaticamente os próximos passos para você conectar.
+                </p>
+              </div>
+
+              <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={submittingRequest}
+                  onClick={() => void handleCancelAccessRequest(activeAccessRequest.id)}
+                >
+                  Informar outro @
+                </Button>
+                <Button type="button" onClick={() => setConnectModalOpen(false)}>
+                  Fechar
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+
+          {/* Caso 2: Liberado pelo SuperAdmin -> Próximos passos */}
+          {!forceNewRequestForm && activeAccessRequest?.status === "APPROVED" && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-1.5">
+                <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 font-semibold text-sm">
+                  <CheckCircle2 className="h-4 w-4" />
+                  Conta @{activeAccessRequest.igUsername} liberada!
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Agora siga os 2 passos abaixo para concluir a integração:
+                </p>
+              </div>
+
+              <div className="space-y-3 text-sm">
+                <div className="rounded-lg border p-3.5 space-y-2 bg-muted/20">
+                  <p className="font-semibold text-xs uppercase tracking-wider text-muted-foreground">
+                    Passo 1 — Aceite o convite no navegador
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Logado na conta <strong className="text-foreground">@{activeAccessRequest.igUsername}</strong> pelo{" "}
+                    <strong className="text-foreground">navegador</strong> (no app do celular essa aba não aparece), abra o link abaixo, entre na aba{" "}
+                    <strong className="text-foreground">Convites de testador</strong> e clique em <strong className="text-foreground">Aceitar</strong>:
+                  </p>
+                  <a
+                    href="https://www.instagram.com/accounts/manage_access/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-pink-600 hover:underline"
+                  >
+                    Abrir Convites de testador (instagram.com/accounts/manage_access)
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+
+                <div className="rounded-lg border p-3.5 space-y-3 bg-muted/20">
+                  <p className="font-semibold text-xs uppercase tracking-wider text-muted-foreground">
+                    Passo 2 — Autorizar e conectar no MarcFlow
+                  </p>
+                  <label className="flex items-start gap-2.5 text-xs cursor-pointer select-none">
+                    <Checkbox
+                      checked={acceptedInviteCheck}
+                      onCheckedChange={(checked) => setAcceptedInviteCheck(Boolean(checked))}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Já aceitei o convite em <strong>Convites de testador</strong> pelo navegador usando a conta{" "}
+                      <strong>@{activeAccessRequest.igUsername}</strong>.
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setForceNewRequestForm(true)}
+                >
+                  Usar outro @
+                </Button>
+                <Button
+                  type="button"
+                  disabled={!acceptedInviteCheck}
+                  onClick={startOAuthFlow}
+                  className="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 text-white"
+                >
+                  Conectar conta do Instagram agora
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+
+          {/* Caso 3: Nenhuma solicitação ativa (ou Recusada / Novo @) */}
+          {(forceNewRequestForm || !activeAccessRequest || activeAccessRequest.status === "REJECTED") && (
+            <form onSubmit={handleSubmitAccessRequest} className="space-y-4">
+              {activeAccessRequest?.status === "REJECTED" && !forceNewRequestForm && (
+                <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+                  <strong>Solicitação anterior (@{activeAccessRequest.igUsername}) recusada:</strong>{" "}
+                  {activeAccessRequest.adminNote || "Confirme o @usuário e envie novamente."}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="ig-handle-input">Seu @usuário do Instagram Profissional</Label>
+                <Input
+                  id="ig-handle-input"
+                  placeholder="Ex.: @sualoja"
+                  value={requestHandleInput}
+                  onChange={(e) => setRequestHandleInput(e.target.value)}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  A conta precisa estar configurada como <strong>Profissional (Comercial ou Criador de Conteúdo)</strong>.
+                  Ao enviar, o administrador será notificado para liberar seu perfil.
+                </p>
+              </div>
+
+              <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between">
+                {isSuperAdmin ? (
+                  <Button type="button" variant="outline" size="sm" onClick={startOAuthFlow}>
+                    Conectar direto (SuperAdmin)
+                  </Button>
+                ) : (
+                  <Button type="button" variant="outline" onClick={() => setConnectModalOpen(false)}>
+                    Cancelar
+                  </Button>
+                )}
+                <Button
+                  type="submit"
+                  disabled={submittingRequest}
+                  className="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 text-white"
+                >
+                  {submittingRequest ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                  Enviar @ e solicitar liberação
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>

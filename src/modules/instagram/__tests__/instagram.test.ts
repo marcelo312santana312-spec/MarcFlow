@@ -8,7 +8,7 @@ import {
     signMediaPath,
     verifyMediaSignature,
 } from "../crypto";
-import { validateInstagramPostInput } from "../validation";
+import { normalizeInstagramUsername, validateInstagramPostInput } from "../validation";
 import { publishInstagramPost, InstagramApiError } from "../client";
 
 function ensureTestEnv() {
@@ -270,4 +270,13 @@ test("publishInstagramPost publica Feed Image, Story, Reels com polling e Carros
             (err: unknown) => err instanceof InstagramApiError && err.code === 190
         );
     }
+});
+
+test("normalizeInstagramUsername limpa @, URL de perfil e rejeita formatos inválidos", () => {
+    assert.equal(normalizeInstagramUsername("@MinhaLoja_Oficial"), "minhaloja_oficial");
+    assert.equal(normalizeInstagramUsername("  sualoja.br  "), "sualoja.br");
+    assert.equal(normalizeInstagramUsername("https://www.instagram.com/marctech.oficial/?hl=pt"), "marctech.oficial");
+    assert.equal(normalizeInstagramUsername(""), null);
+    assert.equal(normalizeInstagramUsername("@nome invalido com espaco"), null);
+    assert.equal(normalizeInstagramUsername("@usuario_muito_longo_que_passa_de_30_caracteres"), null);
 });

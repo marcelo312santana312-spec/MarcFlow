@@ -84,6 +84,20 @@ export interface SuperAdminPlanSummary {
     mrrCents: number;
 }
 
+export interface SuperAdminInstagramRequestItem {
+    id: string;
+    userId: string;
+    userName: string | null;
+    userEmail: string;
+    igUsername: string;
+    status: "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED";
+    adminNote: string | null;
+    approvedAt: string | null;
+    completedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface SuperAdminKpis {
     totalClients: number;
     totalTeamMembers: number;
@@ -241,6 +255,7 @@ export async function getSuperAdminOverviewData() {
         instagramPostGroups,
         dealsPerSession,
         broadcastsTodayPerSession,
+        instagramRequestsRaw,
     ] = await Promise.all([
         prisma.plan.findMany({ orderBy: { priceCents: "asc" } }),
         prisma.user.findMany({
@@ -296,6 +311,12 @@ export async function getSuperAdminOverviewData() {
             by: ["sessionId"],
             where: { createdAt: { gte: startOfDay } },
             _count: { _all: true },
+        }),
+        prisma.instagramAccessRequest.findMany({
+            orderBy: { createdAt: "desc" },
+            include: {
+                user: { select: { name: true, email: true } },
+            },
         }),
     ]);
 
@@ -463,5 +484,19 @@ export async function getSuperAdminOverviewData() {
 
     const kpis = buildSuperAdminKpis(clients);
 
-    return { kpis, plans, clients };
+    const instagramRequests: SuperAdminInstagramRequestItem[] = instagramRequestsRaw.map((req) => ({
+        id: req.id,
+        userId: req.userId,
+        userName: req.user.name,
+        userEmail: req.user.email,
+        igUsername: req.igUsername,
+        status: req.status,
+        adminNote: req.adminNote,
+        approvedAt: req.approvedAt ? req.approvedAt.toISOString() : null,
+        completedAt: req.completedAt ? req.completedAt.toISOString() : null,
+        createdAt: req.createdAt.toISOString(),
+        updatedAt: req.updatedAt.toISOString(),
+    }));
+
+    return { kpis, plans, clients, instagramRequests };
 }
