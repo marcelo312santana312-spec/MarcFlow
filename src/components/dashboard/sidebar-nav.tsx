@@ -33,7 +33,8 @@ import {
     Sparkles,
     Kanban,
     CalendarDays,
-    CreditCard
+    CreditCard,
+    Instagram
 } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 import {
@@ -72,6 +73,7 @@ export const navGroups: NavGroup[] = [
         label: "Canais & Campanhas",
         items: [
             { href: "/dashboard/sessions", label: "Conexões WhatsApp", icon: QrCode, allowedRoles: ["OWNER", "SUPERADMIN"] },
+            { href: "/dashboard/instagram", label: "Instagram (Posts & Stories)", icon: Instagram, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/dashboard/broadcast", label: "Disparos em Massa", icon: Megaphone, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/dashboard/labels", label: "Etiquetas", icon: Tag, allowedRoles: ["OWNER", "SUPERADMIN"] },
             { href: "/dashboard/groups", label: "Grupos", icon: Users, allowedRoles: ["OWNER", "SUPERADMIN"] },

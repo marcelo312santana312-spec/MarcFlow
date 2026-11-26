@@ -27,8 +27,13 @@ export async function proxy(request: NextRequest) {
 
     // API routes: Check for API key or session
     if (pathname.startsWith("/api/")) {
-        // Skip auth endpoints
-        if (pathname.startsWith("/api/auth") || pathname.startsWith("/api/test")) {
+        // Skip auth endpoints and HMAC-signed Instagram OAuth/media endpoints
+        if (
+            pathname.startsWith("/api/auth") ||
+            pathname.startsWith("/api/test") ||
+            pathname.startsWith("/api/instagram/media/") ||
+            pathname.startsWith("/api/instagram/callback")
+        ) {
             return NextResponse.next();
         }
 

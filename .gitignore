@@ -52,3 +52,4 @@ next-env.d.ts
 server.log
 /logs/
 /data/archive/
+/data/instagram-media/

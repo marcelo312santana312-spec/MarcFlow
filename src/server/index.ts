@@ -70,6 +70,7 @@ app.prepare().then(() => {
 
   // Start Scheduler
   import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
+  import("../modules/instagram/scheduler").then(m => m.startInstagramScheduler()).catch(e => logger.error("Instagram", "could not start instagram scheduler", e));
 
   // Cloudflare 520 Fix: increase keep-alive timeout so Node doesn't kill idle connections that Cloudflare expects to reuse
   // See: https://github.com/vercel/next.js/issues/48962

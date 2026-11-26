@@ -2,6 +2,7 @@
 
 ## [Não lançado]
 
+- **Módulo de Instagram (Posts, Carrossel, Reels e Stories)**: integração oficial via *Instagram API with Instagram Login* com fluxo OAuth multiusuário (`/api/instagram/auth` e `/callback`), criptografia AES-256-GCM para tokens com renovação automática, upload e entrega via URL assinada por HMAC (`/api/instagram/media/[filename]`), worker agendador em segundo plano (`src/modules/instagram/scheduler.ts`) e painel completo em `/dashboard/instagram` com pré-visualização, suporte a Feed, Carrossel, Reels e Stories.
 - **Login com Google (OAuth)**: integração do Google OAuth via NextAuth v5. O botão "Entrar com Google" aparece na tela de login quando `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true`. Suporte a criação automática de conta para novos usuários Google (controlado por `GOOGLE_ALLOW_NEW_USERS`).
 - **Suporte Multiplataforma**: inclusão de `cross-env` nos scripts do `package.json` (`dev`, `build`, `start`) para execução universal e correção do `iniciar.bat` para caminho dinâmico (`%~dp0`).
 - **Aprimoramento do Docker**: migração do `Dockerfile` para Node.js 22 LTS e instalação do pacote `ffmpeg`, garantindo compatibilidade no envio de notas de voz em contêineres.
